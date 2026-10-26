@@ -7,6 +7,7 @@ import {getSupabase} from '@/lib/supabase'
 
 export default function WelcomePage(){
  const router=useRouter()
+ const [mode,setMode]=useState<'choose'|'admin'>('choose')
  const [email,setEmail]=useState('')
  const [password,setPassword]=useState('')
  const [busy,setBusy]=useState(false)
@@ -37,7 +38,7 @@ export default function WelcomePage(){
      const {data:isAdmin,error:roleError}=await client.rpc('is_bakery_admin')
      if(roleError||isAdmin!==true){
        await client.auth.signOut()
-       setError('This account is not authorized for the admin dashboard. Continue as a customer instead.')
+       setError('Email and password verified, but this user has not been assigned the Admin role in Supabase. Ask the database owner to enroll this account in bakery_admins.')
        return
      }
      router.replace('/admin')
@@ -47,13 +48,14 @@ export default function WelcomePage(){
  return <main className="flex min-h-screen items-center justify-center bg-[#f8f5f0] px-4 py-10 text-[#302923]">
   <div className="w-full max-w-lg rounded-2xl border border-[#e7dcd2] bg-white p-6 shadow-sm sm:p-9">
    <div className="mb-6 flex items-center gap-3"><span className="rounded-xl bg-[#8e5e42] p-3 text-white"><Cookie className="size-7"/></span><div><h1 className="font-serif text-3xl font-bold">Tan Bakery</h1><p className="text-sm text-[#64574d]">Welcome to BiscuitFlow</p></div></div>
-   <section className="rounded-xl border border-[#eadbcb] bg-[#fff8f0] p-5">
-    <div className="mb-2 flex items-center gap-2"><ShoppingBag className="size-5 text-[#8e5e42]"/><h2 className="font-semibold">Ordering biscuits?</h2></div>
-    <p className="mb-4 text-sm text-[#64574d]">Customers don't need an account. Browse biscuits and order by the can.</p>
-    <Link href="/order" className="block rounded-lg bg-[#8e5e42] px-4 py-3 text-center text-sm font-bold text-white">Continue as customer · Skip login</Link>
-   </section>
-   <div className="my-6 flex items-center gap-3 text-xs text-[#75675c]"><div className="h-px flex-1 bg-[#e4d8cc]"/><span>ADMIN ONLY</span><div className="h-px flex-1 bg-[#e4d8cc]"/></div>
-   <section><div className="mb-3 flex items-center gap-2"><LockKeyhole className="size-5 text-[#8e5e42]"/><h2 className="font-semibold">Admin sign in</h2></div>
+   {mode==='choose' ? <div className="space-y-4">
+    <p className="text-sm text-[#64574d]">How would you like to continue?</p>
+    <Link href="/order" className="flex items-center justify-center gap-2 rounded-xl bg-[#8e5e42] px-5 py-4 text-center font-semibold text-white"><ShoppingBag className="size-5"/> Login as Customer · Skip login</Link>
+    <button type="button" onClick={()=>{setError('');setMode('admin')}} className="flex w-full items-center justify-center gap-2 rounded-xl border border-[#8e5e42] px-5 py-4 font-semibold text-[#7a4f37]"><LockKeyhole className="size-5"/> Login as Admin</button>
+    <p className="text-center text-xs text-[#76685c]">Customers can browse and order without an account.</p>
+   </div> : <section>
+    <button type="button" onClick={()=>{setMode('choose');setError('');setPassword('')}} className="mb-5 text-sm font-semibold text-[#7a4f37] underline">← Back to login choices</button>
+    <div className="mb-3 flex items-center gap-2"><LockKeyhole className="size-5 text-[#8e5e42]"/><h2 className="font-semibold">Admin sign in</h2></div>
     <form onSubmit={signIn} className="space-y-4">
      <label className="block text-sm font-medium text-[#45372e]">Admin email<input required type="email" autoComplete="username" value={email} onChange={e=>setEmail(e.target.value)} placeholder="admin@example.com" className="mt-1 block w-full rounded-lg border border-[#c8b8a9] bg-white p-3 text-base text-[#302923] placeholder:text-[#817369]"/></label>
      <label className="block text-sm font-medium text-[#45372e]">Password<input required type="password" autoComplete="current-password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="Enter your password" className="mt-1 block w-full rounded-lg border border-[#c8b8a9] bg-white p-3 text-base text-[#302923] placeholder:text-[#817369]"/></label>
