@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { getSupabase } from '@/lib/supabase'
 import { LanguageProvider, useLanguage } from '@/components/language-provider'
-import { calculateRequirements, planProduction, getPiecesPerCan, formatQuantity, suggestedIngredients, sampleRecipes, sampleStock, type Recipe, type StockItem, type Unit, type OrderItem } from '@/lib/biscuit-data'
+import { calculateRequirements, convert, planProduction, getPiecesPerCan, formatQuantity, suggestedIngredients, sampleRecipes, sampleStock, type Recipe, type StockItem, type Unit, type OrderItem } from '@/lib/biscuit-data'
 import {
   AlertTriangle, Bell, CalendarDays, Check, ChevronDown, ClipboardList, Clock3,
   Cookie, Factory, FileText, Home, Inbox, Layers3, Menu, Package, Plus, Search,
@@ -14,6 +14,7 @@ import {
 type Status = 'Pending' | 'In Progress' | 'Completed' | 'Cancelled'
 type Order = { id: string; customer: string; items: string; qty: string; date: string; status: Status; method: string; shortage?: boolean; orderItems?: OrderItem[] }
 
+type ShoppingItem = { id:string; ingredientId:string; quantity:number; unit:Unit }
 type Ingredient = { name: string; stock: string; min: string; unit: string; status: 'Good' | 'Low' | 'Out' }
 
 const initialOrders: Order[] = [
@@ -47,12 +48,13 @@ function BiscuitFlowPage() {
   const [orders, setOrders] = useState<Order[]>([])
   const [recipes, setRecipes] = useState<Recipe[]>([])
   const [stock, setStock] = useState<StockItem[]>([])
+  const [shoppingItems,setShoppingItems]=useState<ShoppingItem[]>([])
   const [hydrated, setHydrated] = useState(false)
   const [user,setUser] = useState<User|null>(null)
   const [authChecked,setAuthChecked] = useState(false)
   const [cloudError,setCloudError] = useState('')
   const [busy,setBusy] = useState(false)
-  const previous = useRef({orders:new Map<string,string>(),recipes:new Map<string,string>(),stock:new Map<string,string>()})
+  const previous = useRef({orders:new Map<string,string>(),recipes:new Map<string,string>(),stock:new Map<string,string>(),shopping:new Map<string,string>()})
   const [search, setSearch] = useState('')
   const [showAdd, setShowAdd] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -74,19 +76,22 @@ function BiscuitFlowPage() {
       client.from('biscuit_orders').select('*'),
       client.from('biscuit_recipes').select('*'),
       client.from('biscuit_stock').select('*'),
-    ]).then(([o,r,i])=>{
-      const error=o.error||r.error||i.error
+      client.from('biscuit_shopping_items').select('*'),
+    ]).then(([o,r,i,shopping])=>{
+      const error=o.error||r.error||i.error||shopping.error
       if(!live)return
       if(error){setCloudError(error.message);return}
       const loadedOrders:Order[]=(o.data??[]).map(x=>({id:x.id,customer:x.customer,items:x.items,qty:x.qty,date:x.date,status:x.status as Status,method:x.method,shortage:x.shortage,orderItems:x.order_items??[]}))
       const loadedRecipes:Recipe[]=(r.data??[]).map(x=>({id:x.id,name:x.name,yieldPieces:Number(x.yield_pieces),cansPerBatch:Number(x.cans_per_batch??1),ingredients:x.ingredients??[]}))
       const loadedStock:StockItem[]=(i.data??[]).map(x=>({id:x.id,name:x.name,quantity:Number(x.quantity),minimum:Number(x.minimum),unit:x.unit as Unit}))
+      const loadedShopping:ShoppingItem[]=(shopping.data??[]).map(x=>({id:x.id,ingredientId:x.ingredient_id,quantity:Number(x.requested_quantity),unit:x.unit as Unit}))
       previous.current={
         orders:new Map(loadedOrders.map(x=>[x.id,JSON.stringify(x)])),
         recipes:new Map(loadedRecipes.map(x=>[x.id,JSON.stringify(x)])),
-        stock:new Map(loadedStock.map(x=>[x.id,JSON.stringify(x)]))
+        stock:new Map(loadedStock.map(x=>[x.id,JSON.stringify(x)])),
+        shopping:new Map(loadedShopping.map(x=>[x.id,JSON.stringify(x)]))
       }
-      setOrders(loadedOrders);setRecipes(loadedRecipes);setStock(loadedStock);setHydrated(true)
+      setOrders(loadedOrders);setRecipes(loadedRecipes);setStock(loadedStock);setShoppingItems(loadedShopping);setHydrated(true)
     }).catch(e=>{if(live)setCloudError(String(e))})
     return ()=>{live=false}
   },[client,user?.id])
@@ -120,6 +125,23 @@ function BiscuitFlowPage() {
       else changed.forEach(x=>previous.current.stock.set(x.id,JSON.stringify(x)))
     })
   },[stock,hydrated,client,user])
+  useEffect(()=>{
+    if(!hydrated||!client||!user)return
+    const changed=shoppingItems.filter(x=>previous.current.shopping.get(x.id)!==JSON.stringify(x))
+    const removed=[...previous.current.shopping.keys()].filter(id=>!shoppingItems.some(x=>x.id===id))
+    if(changed.length){
+      client.from('biscuit_shopping_items').upsert(changed.map(x=>({owner_id:user.id,id:x.id,ingredient_id:x.ingredientId,requested_quantity:x.quantity,unit:x.unit})),{onConflict:'owner_id,id'}).then(({error})=>{
+        if(error)setCloudError('Shopping list save failed: '+error.message)
+        else changed.forEach(x=>previous.current.shopping.set(x.id,JSON.stringify(x)))
+      })
+    }
+    if(removed.length){
+      client.from('biscuit_shopping_items').delete().in('id',removed).eq('owner_id',user.id).then(({error})=>{
+        if(error)setCloudError('Shopping item removal failed: '+error.message)
+        else removed.forEach(id=>previous.current.shopping.delete(id))
+      })
+    }
+  },[shoppingItems,hydrated,client,user])
   async function signIn(e:React.FormEvent<HTMLFormElement>){
     e.preventDefault();if(!client)return
     setBusy(true);setCloudError('')
@@ -187,7 +209,7 @@ function BiscuitFlowPage() {
         {active === 'Biscuit Recipes' && <RecipesPage recipes={recipes} setRecipes={setRecipes} stock={stock} />}
         {active === 'Ingredient Inventory' && <InventoryPage stock={stock} setStock={setStock} />}
         {active === 'Ingredient Calculator' && <CalculatorPage requirements={requirements} onShopping={() => setActive('Shopping List')} />}
-        {active === 'Shopping List' && <ShoppingPage requirements={requirements} setStock={setStock} />}
+        {active === 'Shopping List' && <ShoppingPage requirements={requirements} stock={stock} setStock={setStock} shoppingItems={shoppingItems} setShoppingItems={setShoppingItems} />}
         {active === 'Production Planning' && <PlanningPage orders={orders} recipes={recipes} requirements={requirements} setActive={setActive}/>}
         {active === 'Order Calendar' && <CalendarPage orders={orders} />}
         {active === 'Notifications' && <NotificationsPage orders={orders} requirements={requirements} onNavigate={setActive} />}
@@ -249,9 +271,25 @@ function CalculatorPage({ requirements,onShopping }: { requirements: ReturnType<
   return <><PageHeading eyebrow="Workspace / Planning" title="Ingredient calculator" description="Calculated from saved recipes and all pending or in-progress orders." action={<button onClick={onShopping} className="rounded-lg bg-[#8e5e42] px-4 py-2.5 text-sm font-semibold text-white">{tr("View shopping list")}</button>}/><div className="rounded-2xl border bg-white p-5">{missing.length>0?<p className="mb-5 rounded-lg bg-amber-50 p-3 text-sm font-semibold text-amber-900"><AlertTriangle className="mr-2 inline size-4"/>{missing.length} insufficient ingredient(s)</p>:<p className="mb-5 text-sm text-green-700">{tr("No shortages for current orders.")}</p>}<div className="overflow-x-auto"><table className="w-full min-w-[520px] text-left text-sm"><thead><tr className="border-b"><th className="py-3">{tr("Ingredient")}</th><th>{tr("Required")}</th><th>{tr("Available")}</th><th>{tr("Shortage")}</th></tr></thead><tbody>{used.map(r=><tr key={r.ingredient.id} className="border-b last:border-0"><td className="py-3 font-semibold">{r.ingredient.name}</td><td>{formatQuantity(r.required,r.ingredient.unit)}</td><td>{formatQuantity(r.available,r.ingredient.unit)}</td><td className={r.shortage>0?'font-bold text-red-700':'text-green-700'}>{formatQuantity(r.shortage,r.ingredient.unit)}</td></tr>)}</tbody></table></div></div></>
 }
 
-function ShoppingPage({ requirements,setStock }: { requirements: ReturnType<typeof calculateRequirements>; setStock: React.Dispatch<React.SetStateAction<StockItem[]>> }) { const {tr}=useLanguage();
-  const missing=requirements.filter(r=>r.shortage>0)
-  return <><PageHeading eyebrow="Workspace / Inventory" title="Shopping list" description="Live purchase quantities based on shortages across active orders." action={<button onClick={()=>window.print()} className="rounded-lg border px-4 py-2 text-sm"><FileText className="mr-2 inline size-4"/>{tr("Print")}</button>}/><div className="space-y-3 rounded-2xl border bg-white p-5">{missing.length===0?<p className="text-sm text-green-700">{tr("All current ingredient requirements can be met.")}</p>:missing.map(r=><div key={r.ingredient.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4"><div><h3 className="font-semibold">{r.ingredient.name}</h3><p className="text-xs text-gray-500">Required {formatQuantity(r.required,r.ingredient.unit)} · Stock {formatQuantity(r.available,r.ingredient.unit)}</p></div><div className="font-semibold text-red-700">Buy {formatQuantity(r.shortage,r.ingredient.unit)}</div><button onClick={()=>{const received=window.prompt(`Quantity of ${r.ingredient.name} received (${r.ingredient.unit})`,String(Number(r.shortage.toFixed(2))));if(received===null)return;const amount=Number(received);if(!Number.isFinite(amount)||amount<=0){alert('Enter a positive quantity');return}setStock(old=>old.map(s=>s.id===r.ingredient.id?{...s,quantity:s.quantity+amount}:s))}} className="rounded-lg bg-[#8e5e42] px-3 py-2 text-xs font-semibold text-white">{tr("Receive stock")}</button></div>)}</div></>
+function ShoppingPage({requirements,stock,setStock,shoppingItems,setShoppingItems}:{requirements:ReturnType<typeof calculateRequirements>;stock:StockItem[];setStock:React.Dispatch<React.SetStateAction<StockItem[]>>;shoppingItems:ShoppingItem[];setShoppingItems:React.Dispatch<React.SetStateAction<ShoppingItem[]>>}){
+ const {language,tr}=useLanguage()
+ const [ingredientId,setIngredientId]=useState('')
+ const [amount,setAmount]=useState(1)
+ const missing=requirements.filter(r=>r.shortage>0)
+ const existing=stock.find(s=>s.id===ingredientId)
+ function addManual(e:React.FormEvent){e.preventDefault();if(!existing||!Number.isFinite(amount)||amount<=0)return
+  setShoppingItems(old=>[...old,{id:crypto.randomUUID(),ingredientId:existing.id,quantity:amount,unit:existing.unit}]);setAmount(1)
+ }
+ function receive(id:string,quantity:number,unit:Unit,shoppingId?:string){
+   if(!Number.isFinite(quantity)||quantity<=0)return
+   setStock(old=>old.map(s=>s.id===id?{...s,quantity:s.quantity+convert(quantity,unit,s.unit)}:s))
+   if(shoppingId)setShoppingItems(old=>old.filter(x=>x.id!==shoppingId))
+ }
+ return <><PageHeading eyebrow="Workspace / Inventory" title="Shopping list" description={language==='zh'?'自动计算缺货量，可手动添加采购项目，收货后将数量加到原库存。':'Automatic shortages plus admin-added purchases. Receiving stock adds to existing inventory and recalculates warnings.'} action={<button onClick={()=>window.print()} className="rounded-lg border px-4 py-2 text-sm"><FileText className="mr-2 inline size-4"/>{tr("Print")}</button>}/>
+ <div className="mb-5 rounded-2xl border bg-white p-5"><h2 className="mb-3 font-semibold">{language==='zh'?'手动添加采购项目':'Add an ingredient to the shopping list'}</h2><form onSubmit={addManual} className="flex flex-wrap items-end gap-3"><label className="flex-1 text-xs">Ingredient<select aria-label="Ingredient to purchase" required value={ingredientId} onChange={e=>setIngredientId(e.target.value)} className="mt-1 block w-full rounded-lg border bg-white p-2 text-sm"><option value="">Select ingredient</option>{stock.map(i=><option key={i.id} value={i.id}>{i.name}</option>)}</select></label><label className="text-xs">Quantity ({existing?.unit??'unit'})<input aria-label="Purchase quantity" required type="number" min="0.001" step="any" value={amount} onChange={e=>setAmount(Number(e.target.value))} className="mt-1 block w-32 rounded-lg border bg-white p-2 text-sm"/></label><button type="submit" className="rounded-lg bg-[#8e5e42] px-4 py-2 text-sm font-semibold text-white">Add to list</button></form><p className="mt-2 text-xs text-gray-500">Adding a shopping item does not increase stock. Use Receive after purchase to add quantities to existing inventory.</p></div>
+ <div className="mb-5 rounded-2xl border bg-white p-5"><h2 className="mb-3 font-semibold">Automatically calculated shortages ({missing.length})</h2>{missing.length===0?<p className="text-sm text-green-700">{tr("All current ingredient requirements can be met.")}</p>:<div className="space-y-3">{missing.map(r=><div key={r.ingredient.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 p-4"><div><b>{r.ingredient.name}</b><p className="text-xs text-gray-600">Required {formatQuantity(r.required,r.ingredient.unit)} · In stock {formatQuantity(r.available,r.ingredient.unit)}</p></div><span className="font-semibold text-red-700">Still need {formatQuantity(r.shortage,r.ingredient.unit)}</span><button onClick={()=>{const input=window.prompt('Quantity received ('+r.ingredient.unit+')',String(Number(r.shortage.toFixed(3))));if(input===null)return;receive(r.ingredient.id,Number(input),r.ingredient.unit)}} className="rounded-lg bg-[#8e5e42] px-3 py-2 text-xs text-white">Receive stock</button></div>)}</div>}</div>
+ <div className="rounded-2xl border bg-white p-5"><h2 className="mb-3 font-semibold">Admin shopping items ({shoppingItems.length})</h2>{shoppingItems.length===0?<p className="text-sm text-gray-500">No manually added shopping items.</p>:<div className="space-y-2">{shoppingItems.map(item=>{const ingredient=stock.find(i=>i.id===item.ingredientId);const requirement=requirements.find(r=>r.ingredient.id===item.ingredientId);return <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3"><div><b className="text-sm">{ingredient?.name??'Missing ingredient'}</b><p className="text-xs text-gray-500">To buy: {formatQuantity(item.quantity,item.unit)} · Current: {ingredient?formatQuantity(ingredient.quantity,ingredient.unit):'Unavailable'}{requirement&&requirement.shortage>0?' · Still short: '+formatQuantity(requirement.shortage,requirement.ingredient.unit):''}</p></div><div className="flex gap-2"><button disabled={!ingredient} onClick={()=>receive(item.ingredientId,item.quantity,item.unit,item.id)} className="rounded-lg bg-[#8e5e42] px-3 py-2 text-xs text-white disabled:opacity-50">Receive + add to stock</button><button onClick={()=>setShoppingItems(old=>old.filter(i=>i.id!==item.id))} className="rounded-lg border px-3 py-2 text-xs">Remove</button></div></div>})}</div>}</div>
+ </>
 }
 
 function PlanningPage({orders,recipes,requirements,setActive}:{orders:Order[];recipes:Recipe[];requirements:ReturnType<typeof calculateRequirements>;setActive:(page:string)=>void}){
