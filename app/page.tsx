@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { getSupabase } from '@/lib/supabase'
 import { LanguageProvider, useLanguage } from '@/components/language-provider'
-import { calculateRequirements, formatQuantity, suggestedIngredients, sampleRecipes, sampleStock, type Recipe, type StockItem, type Unit, type OrderItem } from '@/lib/biscuit-data'
+import { calculateRequirements, convert, planProduction, getPiecesPerCan, formatQuantity, suggestedIngredients, sampleRecipes, sampleStock, type Recipe, type StockItem, type Unit, type OrderItem } from '@/lib/biscuit-data'
 import {
   AlertTriangle, Bell, CalendarDays, Check, ChevronDown, ClipboardList, Clock3,
   Cookie, Factory, FileText, Home, Inbox, Layers3, Menu, Package, Plus, Search,
@@ -14,6 +14,7 @@ import {
 type Status = 'Pending' | 'In Progress' | 'Completed' | 'Cancelled'
 type Order = { id: string; customer: string; items: string; qty: string; date: string; status: Status; method: string; shortage?: boolean; orderItems?: OrderItem[] }
 
+type ShoppingItem = { id:string; ingredientId:string; quantity:number; unit:Unit }
 type Ingredient = { name: string; stock: string; min: string; unit: string; status: 'Good' | 'Low' | 'Out' }
 
 const initialOrders: Order[] = [
@@ -47,12 +48,13 @@ function BiscuitFlowPage() {
   const [orders, setOrders] = useState<Order[]>([])
   const [recipes, setRecipes] = useState<Recipe[]>([])
   const [stock, setStock] = useState<StockItem[]>([])
+  const [shoppingItems,setShoppingItems]=useState<ShoppingItem[]>([])
   const [hydrated, setHydrated] = useState(false)
   const [user,setUser] = useState<User|null>(null)
   const [authChecked,setAuthChecked] = useState(false)
   const [cloudError,setCloudError] = useState('')
   const [busy,setBusy] = useState(false)
-  const previous = useRef({orders:new Map<string,string>(),recipes:new Map<string,string>(),stock:new Map<string,string>()})
+  const previous = useRef({orders:new Map<string,string>(),recipes:new Map<string,string>(),stock:new Map<string,string>(),shopping:new Map<string,string>()})
   const [search, setSearch] = useState('')
   const [showAdd, setShowAdd] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -74,19 +76,23 @@ function BiscuitFlowPage() {
       client.from('biscuit_orders').select('*'),
       client.from('biscuit_recipes').select('*'),
       client.from('biscuit_stock').select('*'),
-    ]).then(([o,r,i])=>{
+      client.from('biscuit_shopping_items').select('*'),
+    ]).then(([o,r,i,shopping])=>{
       const error=o.error||r.error||i.error
+      if(shopping.error)setCloudError('Shopping list setup needed: run 20261026_cans_shopping.sql in Supabase SQL Editor. '+shopping.error.message)
       if(!live)return
       if(error){setCloudError(error.message);return}
       const loadedOrders:Order[]=(o.data??[]).map(x=>({id:x.id,customer:x.customer,items:x.items,qty:x.qty,date:x.date,status:x.status as Status,method:x.method,shortage:x.shortage,orderItems:x.order_items??[]}))
-      const loadedRecipes:Recipe[]=(r.data??[]).map(x=>({id:x.id,name:x.name,yieldPieces:Number(x.yield_pieces),ingredients:x.ingredients??[]}))
+      const loadedRecipes:Recipe[]=(r.data??[]).map(x=>({id:x.id,name:x.name,yieldPieces:Number(x.yield_pieces),cansPerBatch:Number(x.cans_per_batch??1),ingredients:x.ingredients??[]}))
       const loadedStock:StockItem[]=(i.data??[]).map(x=>({id:x.id,name:x.name,quantity:Number(x.quantity),minimum:Number(x.minimum),unit:x.unit as Unit}))
+      const loadedShopping:ShoppingItem[]=(shopping.data??[]).map(x=>({id:x.id,ingredientId:x.ingredient_id,quantity:Number(x.requested_quantity),unit:x.unit as Unit}))
       previous.current={
         orders:new Map(loadedOrders.map(x=>[x.id,JSON.stringify(x)])),
         recipes:new Map(loadedRecipes.map(x=>[x.id,JSON.stringify(x)])),
-        stock:new Map(loadedStock.map(x=>[x.id,JSON.stringify(x)]))
+        stock:new Map(loadedStock.map(x=>[x.id,JSON.stringify(x)])),
+        shopping:new Map(loadedShopping.map(x=>[x.id,JSON.stringify(x)]))
       }
-      setOrders(loadedOrders);setRecipes(loadedRecipes);setStock(loadedStock);setHydrated(true)
+      setOrders(loadedOrders);setRecipes(loadedRecipes);setStock(loadedStock);setShoppingItems(loadedShopping);setHydrated(true)
     }).catch(e=>{if(live)setCloudError(String(e))})
     return ()=>{live=false}
   },[client,user?.id])
@@ -104,7 +110,7 @@ function BiscuitFlowPage() {
     if(!hydrated||!client||!user)return
     const changed=recipes.filter(x=>previous.current.recipes.get(x.id)!==JSON.stringify(x))
     if(!changed.length)return
-    const rows=changed.map(x=>({owner_id:user.id,id:x.id,name:x.name,yield_pieces:x.yieldPieces,ingredients:x.ingredients}))
+    const rows=changed.map(x=>({owner_id:user.id,id:x.id,name:x.name,yield_pieces:x.yieldPieces,cans_per_batch:x.cansPerBatch??1,ingredients:x.ingredients}))
     client.from('biscuit_recipes').upsert(rows,{onConflict:'owner_id,id'}).then(({error})=>{
       if(error)setCloudError('Recipe save failed: '+error.message)
       else changed.forEach(x=>previous.current.recipes.set(x.id,JSON.stringify(x)))
@@ -120,6 +126,23 @@ function BiscuitFlowPage() {
       else changed.forEach(x=>previous.current.stock.set(x.id,JSON.stringify(x)))
     })
   },[stock,hydrated,client,user])
+  useEffect(()=>{
+    if(!hydrated||!client||!user)return
+    const changed=shoppingItems.filter(x=>previous.current.shopping.get(x.id)!==JSON.stringify(x))
+    const removed=[...previous.current.shopping.keys()].filter(id=>!shoppingItems.some(x=>x.id===id))
+    if(changed.length){
+      client.from('biscuit_shopping_items').upsert(changed.map(x=>({owner_id:user.id,id:x.id,ingredient_id:x.ingredientId,requested_quantity:x.quantity,unit:x.unit})),{onConflict:'owner_id,id'}).then(({error})=>{
+        if(error)setCloudError('Shopping list save failed: '+error.message)
+        else changed.forEach(x=>previous.current.shopping.set(x.id,JSON.stringify(x)))
+      })
+    }
+    if(removed.length){
+      client.from('biscuit_shopping_items').delete().in('id',removed).eq('owner_id',user.id).then(({error})=>{
+        if(error)setCloudError('Shopping item removal failed: '+error.message)
+        else removed.forEach(id=>previous.current.shopping.delete(id))
+      })
+    }
+  },[shoppingItems,hydrated,client,user])
   async function signIn(e:React.FormEvent<HTMLFormElement>){
     e.preventDefault();if(!client)return
     setBusy(true);setCloudError('')
@@ -154,11 +177,12 @@ function BiscuitFlowPage() {
     e.preventDefault(); const data = new FormData(e.currentTarget); const customer = String(data.get('customer') || 'New customer')
     const items = data.getAll('item').map(String)
     if (items.length === 0) { window.alert('Select at least one biscuit.'); return }
-    const orderItems = items.map(item => ({ recipeId: recipes.find(r => r.name === item)?.id ?? '', pieces: Number(data.get(`quantity-${item}`) || 1) }))
-    const quantities = items.map((item) => `${item}: ${data.get(`quantity-${item}`) || 1} pcs`)
+    const orderItems = items.map(item => ({ recipeId: recipes.find(r => r.name === item)?.id ?? '', cans: Number(data.get(`quantity-${item}`) || 1) }))
+    if (orderItems.some(i => !i.recipeId || !Number.isInteger(i.cans) || i.cans < 1)) { alert('Select valid recipes and enter at least one whole can for each.'); return }
+    const quantities = items.map((item) => `${item}: ${data.get(`quantity-${item}`) || 1} can(s)`)
     const dueDate = String(data.get('dueDate') || '')
     const formattedDueDate = dueDate ? new Date(`${dueDate}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : 'Nov 06, 2026'
-    setOrders([{ id: crypto.randomUUID(), customer, items: items.join(', ') || 'Peanut Biscuit', qty: quantities.join(' · ') || 'Peanut Biscuit: 1 pcs', date: formattedDueDate, status: 'Pending', method: 'Pickup', orderItems }, ...orders]); setShowAdd(false)
+    setOrders([{ id: crypto.randomUUID(), customer, items: items.join(', ') || 'Peanut Biscuit', qty: quantities.join(' · ') || 'Peanut Biscuit: 1 can', date: formattedDueDate, status: 'Pending', method: 'Pickup', orderItems }, ...orders]); setShowAdd(false)
   }
 
   if (!client) return <div className="mx-auto mt-24 max-w-md rounded-xl border p-8"><h1 className="text-2xl font-bold">Supabase setup required</h1><p className="mt-3">Add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY to .env.local, then restart the development server.</p></div>
@@ -186,14 +210,14 @@ function BiscuitFlowPage() {
         {active === 'Biscuit Recipes' && <RecipesPage recipes={recipes} setRecipes={setRecipes} stock={stock} />}
         {active === 'Ingredient Inventory' && <InventoryPage stock={stock} setStock={setStock} />}
         {active === 'Ingredient Calculator' && <CalculatorPage requirements={requirements} onShopping={() => setActive('Shopping List')} />}
-        {active === 'Shopping List' && <ShoppingPage requirements={requirements} setStock={setStock} />}
-        {active === 'Production Planning' && <PlanningPage />}
+        {active === 'Shopping List' && <ShoppingPage requirements={requirements} stock={stock} setStock={setStock} shoppingItems={shoppingItems} setShoppingItems={setShoppingItems} />}
+        {active === 'Production Planning' && <PlanningPage orders={orders} recipes={recipes} requirements={requirements} setActive={setActive}/>}
         {active === 'Order Calendar' && <CalendarPage orders={orders} />}
         {active === 'Notifications' && <NotificationsPage orders={orders} requirements={requirements} onNavigate={setActive} />}
         {active === 'Settings' && <SettingsPage />}
       </div>
     </main>
-    {showAdd && <div className="fixed inset-0 z-40 flex items-center justify-center bg-[#39291f]/30 p-4"><form onSubmit={addOrder} className="w-full max-w-md rounded-2xl bg-[#fffdf9] p-6 shadow-2xl"><div className="mb-5 flex items-center justify-between"><div><h2 className="font-serif text-xl font-bold">{tr("Add new order")}</h2><p className="mt-1 text-xs text-[#a08e80]">{tr("Create a customer order for your bakery.")}</p></div><button type="button" onClick={() => setShowAdd(false)} aria-label="Close"><X className="size-5 text-[#9e8d80]" /></button></div><div className="flex flex-col gap-4"><label className="text-xs font-semibold">{tr("Customer name")}<input name="customer" required className="mt-1.5 h-10 w-full rounded-lg border border-[#e5dbd1] bg-white px-3 text-sm outline-none focus:border-[#bd8b6d]" placeholder="e.g. Sarah Lim" /></label><fieldset className="flex flex-col gap-2"><legend className="text-xs font-semibold">{tr("Biscuit types and quantities")}<span className="ml-1 font-normal text-[#a08e80]">(select each type and set its quantity)</span></legend>{recipes.map((recipe) => recipe.name).map((item) => <label key={item} className="flex items-center gap-2 rounded-lg border border-[#e5dbd1] bg-white px-3 py-2 text-xs"><input name="item" value={item} type="checkbox" className="accent-[#8e5e42]" /><span className="min-w-0 flex-1">{item}</span><input name={`quantity-${item}`} type="number" min="1" defaultValue="100" aria-label={`${item} quantity`} className="h-8 w-20 rounded-md border border-[#e5dbd1] px-2 text-right text-xs outline-none focus:border-[#bd8b6d]" /><span className="text-[#a08e80]">pcs</span></label>)}</fieldset><label className="text-xs font-semibold">{tr("Due date")}<input name="dueDate" type="date" required className="mt-1.5 h-10 w-full rounded-lg border border-[#e5dbd1] bg-white px-3 text-sm outline-none focus:border-[#bd8b6d]" /></label><button className="mt-2 rounded-lg bg-[#8e5e42] py-2.5 text-sm font-semibold text-white hover:bg-[#744832]">{tr("Create order")}</button></div></form></div>}
+    {showAdd && <div className="fixed inset-0 z-40 flex items-center justify-center bg-[#39291f]/30 p-4"><form onSubmit={addOrder} className="w-full max-w-md rounded-2xl bg-[#fffdf9] p-6 shadow-2xl"><div className="mb-5 flex items-center justify-between"><div><h2 className="font-serif text-xl font-bold">{tr("Add new order")}</h2><p className="mt-1 text-xs text-[#a08e80]">{tr("Create a customer order for your bakery.")}</p></div><button type="button" onClick={() => setShowAdd(false)} aria-label="Close"><X className="size-5 text-[#9e8d80]" /></button></div><div className="flex flex-col gap-4"><label className="text-xs font-semibold">{tr("Customer name")}<input name="customer" required className="mt-1.5 h-10 w-full rounded-lg border border-[#e5dbd1] bg-white px-3 text-sm outline-none focus:border-[#bd8b6d]" placeholder="e.g. Sarah Lim" /></label><fieldset className="flex flex-col gap-2"><legend className="text-xs font-semibold">{tr("Biscuit types and quantities")}<span className="ml-1 font-normal text-[#a08e80]">(select each type and set its quantity)</span></legend>{recipes.map((recipe) => recipe.name).map((item) => <label key={item} className="flex items-center gap-2 rounded-lg border border-[#e5dbd1] bg-white px-3 py-2 text-xs"><input name="item" value={item} type="checkbox" className="accent-[#8e5e42]" /><span className="min-w-0 flex-1">{item}</span><input name={`quantity-${item}`} type="number" min="1" defaultValue="1" aria-label={`${item} cans`} className="h-8 w-20 rounded-md border border-[#e5dbd1] px-2 text-right text-xs outline-none focus:border-[#bd8b6d]" /><span className="text-[#a08e80]">cans</span></label>)}</fieldset><label className="text-xs font-semibold">{tr("Due date")}<input name="dueDate" type="date" required className="mt-1.5 h-10 w-full rounded-lg border border-[#e5dbd1] bg-white px-3 text-sm outline-none focus:border-[#bd8b6d]" /></label><button className="mt-2 rounded-lg bg-[#8e5e42] py-2.5 text-sm font-semibold text-white hover:bg-[#744832]">{tr("Create order")}</button></div></form></div>}
   </div>
 }
 
@@ -207,23 +231,24 @@ function RecipesPage({ recipes, setRecipes, stock }: { recipes: Recipe[]; setRec
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
   const [yieldPieces, setYieldPieces] = useState(100)
+  const [cansPerBatch,setCansPerBatch]=useState(1)
   const [parts, setParts] = useState<Recipe['ingredients']>([])
   function openEditor(recipe?: Recipe) {
-    setEditing(recipe ?? null); setName(recipe?.name ?? ''); setYieldPieces(recipe?.yieldPieces ?? 100)
+    setEditing(recipe ?? null); setName(recipe?.name ?? ''); setYieldPieces(recipe?.yieldPieces ?? 100);setCansPerBatch(recipe?.cansPerBatch ?? 1)
     setParts(recipe?.ingredients.map(i => ({...i})) ?? []); setOpen(true)
   }
   function save(e: React.FormEvent) {
     e.preventDefault()
-    if (!name.trim() || yieldPieces <= 0 || parts.length === 0 || parts.some(p => !p.ingredientId || p.quantity <= 0) || new Set(parts.map(p => p.ingredientId)).size !== parts.length) {
-      alert('Enter a name, positive yield and valid, unique ingredients.'); return
+    if (!name.trim() || yieldPieces <= 0 || !Number.isInteger(yieldPieces) || cansPerBatch <= 0 || !Number.isInteger(cansPerBatch) || yieldPieces % cansPerBatch !== 0 || parts.length === 0 || parts.some(p => !p.ingredientId || p.quantity <= 0) || new Set(parts.map(p => p.ingredientId)).size !== parts.length) {
+      alert('Enter a valid recipe: positive whole-number pieces and cans, pieces evenly divisible by cans, and unique ingredients with positive quantities.'); return
     }
-    const record: Recipe = { id: editing?.id ?? crypto.randomUUID(), name: name.trim(), yieldPieces, ingredients: parts }
+    const record: Recipe = { id: editing?.id ?? crypto.randomUUID(), name: name.trim(), yieldPieces, cansPerBatch, ingredients: parts }
     setRecipes(old => editing ? old.map(r => r.id === editing.id ? record : r) : [...old, record])
     setOpen(false)
   }
   return <><PageHeading eyebrow="Workspace / Recipes" title="Biscuit recipes" description="Saved recipes are used in live order ingredient calculations." action={<button onClick={() => openEditor()} className="rounded-lg bg-[#8e5e42] px-4 py-2.5 text-sm font-semibold text-white"><Plus className="mr-2 inline size-4"/>{tr("New recipe")}</button>} />
-    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{recipes.map(recipe => <div key={recipe.id} className="rounded-2xl border border-[#ebe3da] bg-white p-5"><Cookie className="mb-3 size-8 text-[#a87556]"/><h3 className="font-serif text-lg font-bold">{recipe.name}</h3><p className="mt-2 text-xs text-[#9b8b7f]">Yields {recipe.yieldPieces} pieces · {recipe.ingredients.length} ingredients</p><div className="mt-3 space-y-1 text-xs">{recipe.ingredients.map(i => <p key={i.ingredientId}>{stock.find(s => s.id === i.ingredientId)?.name ?? 'Unknown ingredient'}: {i.quantity} {i.unit}</p>)}</div><button onClick={() => openEditor(recipe)} className="mt-4 rounded-lg border px-3 py-2 text-xs font-semibold">{tr("Edit recipe")}</button></div>)}</div>
-    {open && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3"><form onSubmit={save} className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl bg-white p-6"><div className="flex items-center justify-between"><h2 className="font-serif text-xl font-bold">{editing ? 'Edit recipe' : 'New recipe'}</h2><button type="button" onClick={() => setOpen(false)}><X/></button></div><label className="mt-5 block text-sm">Biscuit name<input required value={name} onChange={e => setName(e.target.value)} className="mt-1 w-full rounded-lg border border-[#e5dbd1] bg-white px-3 py-2 text-sm"/></label><label className="mt-3 block text-sm">Pieces per batch<input required type="number" min="1" value={yieldPieces} onChange={e => setYieldPieces(Number(e.target.value))} className="mt-1 w-full rounded-lg border border-[#e5dbd1] bg-white px-3 py-2 text-sm"/></label><h3 className="mt-5 font-semibold">Ingredients per batch</h3><div className="mt-3 space-y-3">{parts.map((part,i) => <div key={i} className="flex flex-wrap gap-2"><select aria-label="Ingredient" value={part.ingredientId} onChange={e => {const found=stock.find(s => s.id === e.target.value);setParts(old=>old.map((p,j)=>j===i?{...p,ingredientId:e.target.value,unit:found?.unit??'g'}:p))}} className="rounded-lg border border-[#e5dbd1] bg-white px-3 py-2 text-sm"><option value="">{tr("Select ingredient")}</option>{stock.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select><input aria-label="Quantity" type="number" min="0.001" step="any" value={part.quantity} onChange={e=>setParts(old=>old.map((p,j)=>j===i?{...p,quantity:Number(e.target.value)}:p))} className="w-24 rounded-lg border border-[#e5dbd1] bg-white px-3 py-2 text-sm"/><select aria-label="Unit" value={part.unit} onChange={e=>setParts(old=>old.map((p,j)=>j===i?{...p,unit:e.target.value as Unit}:p))} className="rounded-lg border border-[#e5dbd1] bg-white px-3 py-2 text-sm">{(['g','kg','ml','L','pcs'] as Unit[]).map(u=><option key={u}>{u}</option>)}</select><button type="button" aria-label="Remove ingredient" onClick={()=>setParts(old=>old.filter((_,j)=>j!==i))}><X className="size-4"/></button></div>)}</div><button type="button" onClick={()=>setParts(old=>[...old,{ingredientId:'',quantity:1,unit:'g'}])} className="mt-4 rounded-lg border px-3 py-2 text-xs">+ Add ingredient</button><p className="mt-3 text-xs text-[#9b8b7f]">{tr("Add ingredients in Inventory first. Units must be compatible with their inventory units.")}</p><button type="submit" className="mt-5 block w-full rounded-lg bg-[#8e5e42] py-3 font-semibold text-white">{tr("Save recipe")}</button></form></div>}
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{recipes.map(recipe => <div key={recipe.id} className="rounded-2xl border border-[#ebe3da] bg-white p-5"><Cookie className="mb-3 size-8 text-[#a87556]"/><h3 className="font-serif text-lg font-bold">{recipe.name}</h3><p className="mt-2 text-xs text-[#9b8b7f]">Yields {recipe.yieldPieces} pieces / {recipe.cansPerBatch??1} cans · {getPiecesPerCan(recipe)} pieces/can · {recipe.ingredients.length} ingredients</p><div className="mt-3 space-y-1 text-xs">{recipe.ingredients.map(i => <p key={i.ingredientId}>{stock.find(s => s.id === i.ingredientId)?.name ?? 'Unknown ingredient'}: {i.quantity} {i.unit}</p>)}</div><button onClick={() => openEditor(recipe)} className="mt-4 rounded-lg border px-3 py-2 text-xs font-semibold">{tr("Edit recipe")}</button></div>)}</div>
+    {open && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3"><form onSubmit={save} className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-2xl bg-white p-6"><div className="flex items-center justify-between"><h2 className="font-serif text-xl font-bold">{editing ? 'Edit recipe' : 'New recipe'}</h2><button type="button" onClick={() => setOpen(false)}><X/></button></div><label className="mt-5 block text-sm">Biscuit name<input required value={name} onChange={e => setName(e.target.value)} className="mt-1 w-full rounded-lg border border-[#e5dbd1] bg-white px-3 py-2 text-sm"/></label><label className="mt-3 block text-sm">Pieces per batch<input required type="number" min="1" value={yieldPieces} onChange={e => setYieldPieces(Number(e.target.value))} className="mt-1 w-full rounded-lg border border-[#e5dbd1] bg-white px-3 py-2 text-sm"/></label><label className="mt-3 block text-sm">Cans per batch<input required type="number" min="1" step="1" value={cansPerBatch} onChange={e=>setCansPerBatch(Number(e.target.value))} className="mt-1 w-full rounded-lg border border-[#e5dbd1] bg-white px-3 py-2 text-sm"/></label><p className="mt-2 text-xs text-[#8b705a]">Example: 1000 pieces / 5 cans = 200 pieces per can. Enter whole numbers, and ensure pieces per batch is divisible by cans per batch.</p><h3 className="mt-5 font-semibold">Ingredients per batch</h3><div className="mt-3 space-y-3">{parts.map((part,i) => <div key={i} className="flex flex-wrap gap-2"><select aria-label="Ingredient" value={part.ingredientId} onChange={e => {const found=stock.find(s => s.id === e.target.value);setParts(old=>old.map((p,j)=>j===i?{...p,ingredientId:e.target.value,unit:found?.unit??'g'}:p))}} className="rounded-lg border border-[#e5dbd1] bg-white px-3 py-2 text-sm"><option value="">{tr("Select ingredient")}</option>{stock.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select><input aria-label="Quantity" type="number" min="0.001" step="any" value={part.quantity} onChange={e=>setParts(old=>old.map((p,j)=>j===i?{...p,quantity:Number(e.target.value)}:p))} className="w-24 rounded-lg border border-[#e5dbd1] bg-white px-3 py-2 text-sm"/><select aria-label="Unit" value={part.unit} onChange={e=>setParts(old=>old.map((p,j)=>j===i?{...p,unit:e.target.value as Unit}:p))} className="rounded-lg border border-[#e5dbd1] bg-white px-3 py-2 text-sm">{(['g','kg','ml','L','pcs'] as Unit[]).map(u=><option key={u}>{u}</option>)}</select><button type="button" aria-label="Remove ingredient" onClick={()=>setParts(old=>old.filter((_,j)=>j!==i))}><X className="size-4"/></button></div>)}</div><button type="button" onClick={()=>setParts(old=>[...old,{ingredientId:'',quantity:1,unit:'g'}])} className="mt-4 rounded-lg border px-3 py-2 text-xs">+ Add ingredient</button><p className="mt-3 text-xs text-[#9b8b7f]">{tr("Add ingredients in Inventory first. Units must be compatible with their inventory units.")}</p><button type="submit" className="mt-5 block w-full rounded-lg bg-[#8e5e42] py-3 font-semibold text-white">{tr("Save recipe")}</button></form></div>}
   </>
 }
 
@@ -247,13 +272,38 @@ function CalculatorPage({ requirements,onShopping }: { requirements: ReturnType<
   return <><PageHeading eyebrow="Workspace / Planning" title="Ingredient calculator" description="Calculated from saved recipes and all pending or in-progress orders." action={<button onClick={onShopping} className="rounded-lg bg-[#8e5e42] px-4 py-2.5 text-sm font-semibold text-white">{tr("View shopping list")}</button>}/><div className="rounded-2xl border bg-white p-5">{missing.length>0?<p className="mb-5 rounded-lg bg-amber-50 p-3 text-sm font-semibold text-amber-900"><AlertTriangle className="mr-2 inline size-4"/>{missing.length} insufficient ingredient(s)</p>:<p className="mb-5 text-sm text-green-700">{tr("No shortages for current orders.")}</p>}<div className="overflow-x-auto"><table className="w-full min-w-[520px] text-left text-sm"><thead><tr className="border-b"><th className="py-3">{tr("Ingredient")}</th><th>{tr("Required")}</th><th>{tr("Available")}</th><th>{tr("Shortage")}</th></tr></thead><tbody>{used.map(r=><tr key={r.ingredient.id} className="border-b last:border-0"><td className="py-3 font-semibold">{r.ingredient.name}</td><td>{formatQuantity(r.required,r.ingredient.unit)}</td><td>{formatQuantity(r.available,r.ingredient.unit)}</td><td className={r.shortage>0?'font-bold text-red-700':'text-green-700'}>{formatQuantity(r.shortage,r.ingredient.unit)}</td></tr>)}</tbody></table></div></div></>
 }
 
-function ShoppingPage({ requirements,setStock }: { requirements: ReturnType<typeof calculateRequirements>; setStock: React.Dispatch<React.SetStateAction<StockItem[]>> }) { const {tr}=useLanguage();
-  const missing=requirements.filter(r=>r.shortage>0)
-  return <><PageHeading eyebrow="Workspace / Inventory" title="Shopping list" description="Live purchase quantities based on shortages across active orders." action={<button onClick={()=>window.print()} className="rounded-lg border px-4 py-2 text-sm"><FileText className="mr-2 inline size-4"/>{tr("Print")}</button>}/><div className="space-y-3 rounded-2xl border bg-white p-5">{missing.length===0?<p className="text-sm text-green-700">{tr("All current ingredient requirements can be met.")}</p>:missing.map(r=><div key={r.ingredient.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4"><div><h3 className="font-semibold">{r.ingredient.name}</h3><p className="text-xs text-gray-500">Required {formatQuantity(r.required,r.ingredient.unit)} · Stock {formatQuantity(r.available,r.ingredient.unit)}</p></div><div className="font-semibold text-red-700">Buy {formatQuantity(r.shortage,r.ingredient.unit)}</div><button onClick={()=>{const received=window.prompt(`Quantity of ${r.ingredient.name} received (${r.ingredient.unit})`,String(Number(r.shortage.toFixed(2))));if(received===null)return;const amount=Number(received);if(!Number.isFinite(amount)||amount<=0){alert('Enter a positive quantity');return}setStock(old=>old.map(s=>s.id===r.ingredient.id?{...s,quantity:s.quantity+amount}:s))}} className="rounded-lg bg-[#8e5e42] px-3 py-2 text-xs font-semibold text-white">{tr("Receive stock")}</button></div>)}</div></>
+function ShoppingPage({requirements,stock,setStock,shoppingItems,setShoppingItems}:{requirements:ReturnType<typeof calculateRequirements>;stock:StockItem[];setStock:React.Dispatch<React.SetStateAction<StockItem[]>>;shoppingItems:ShoppingItem[];setShoppingItems:React.Dispatch<React.SetStateAction<ShoppingItem[]>>}){
+ const {language,tr}=useLanguage()
+ const [ingredientId,setIngredientId]=useState('')
+ const [amount,setAmount]=useState(1)
+ const missing=requirements.filter(r=>r.shortage>0)
+ const existing=stock.find(s=>s.id===ingredientId)
+ function addManual(e:React.FormEvent){e.preventDefault();if(!existing||!Number.isFinite(amount)||amount<=0)return
+  setShoppingItems(old=>[...old,{id:crypto.randomUUID(),ingredientId:existing.id,quantity:amount,unit:existing.unit}]);setAmount(1)
+ }
+ function receive(id:string,quantity:number,unit:Unit,shoppingId?:string){
+   if(!Number.isFinite(quantity)||quantity<=0)return
+   setStock(old=>old.map(s=>s.id===id?{...s,quantity:s.quantity+convert(quantity,unit,s.unit)}:s))
+   if(shoppingId)setShoppingItems(old=>old.filter(x=>x.id!==shoppingId))
+ }
+ return <><PageHeading eyebrow="Workspace / Inventory" title="Shopping list" description={language==='zh'?'自动计算缺货量，可手动添加采购项目，收货后将数量加到原库存。':'Automatic shortages plus admin-added purchases. Receiving stock adds to existing inventory and recalculates warnings.'} action={<button onClick={()=>window.print()} className="rounded-lg border px-4 py-2 text-sm"><FileText className="mr-2 inline size-4"/>{tr("Print")}</button>}/>
+ <div className="mb-5 rounded-2xl border bg-white p-5"><h2 className="mb-3 font-semibold">{language==='zh'?'手动添加采购项目':'Add an ingredient to the shopping list'}</h2><form onSubmit={addManual} className="flex flex-wrap items-end gap-3"><label className="flex-1 text-xs">Ingredient<select aria-label="Ingredient to purchase" required value={ingredientId} onChange={e=>setIngredientId(e.target.value)} className="mt-1 block w-full rounded-lg border bg-white p-2 text-sm"><option value="">Select ingredient</option>{stock.map(i=><option key={i.id} value={i.id}>{i.name}</option>)}</select></label><label className="text-xs">Quantity ({existing?.unit??'unit'})<input aria-label="Purchase quantity" required type="number" min="0.001" step="any" value={amount} onChange={e=>setAmount(Number(e.target.value))} className="mt-1 block w-32 rounded-lg border bg-white p-2 text-sm"/></label><button type="submit" className="rounded-lg bg-[#8e5e42] px-4 py-2 text-sm font-semibold text-white">Add to list</button></form><p className="mt-2 text-xs text-gray-500">Adding a shopping item does not increase stock. Use Receive after purchase to add quantities to existing inventory.</p></div>
+ <div className="mb-5 rounded-2xl border bg-white p-5"><h2 className="mb-3 font-semibold">Automatically calculated shortages ({missing.length})</h2>{missing.length===0?<p className="text-sm text-green-700">{tr("All current ingredient requirements can be met.")}</p>:<div className="space-y-3">{missing.map(r=><div key={r.ingredient.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 p-4"><div><b>{r.ingredient.name}</b><p className="text-xs text-gray-600">Required {formatQuantity(r.required,r.ingredient.unit)} · In stock {formatQuantity(r.available,r.ingredient.unit)}</p></div><span className="font-semibold text-red-700">Still need {formatQuantity(r.shortage,r.ingredient.unit)}</span><button onClick={()=>{const input=window.prompt('Quantity received ('+r.ingredient.unit+')',String(Number(r.shortage.toFixed(3))));if(input===null)return;receive(r.ingredient.id,Number(input),r.ingredient.unit)}} className="rounded-lg bg-[#8e5e42] px-3 py-2 text-xs text-white">Receive stock</button></div>)}</div>}</div>
+ <div className="rounded-2xl border bg-white p-5"><h2 className="mb-3 font-semibold">Admin shopping items ({shoppingItems.length})</h2>{shoppingItems.length===0?<p className="text-sm text-gray-500">No manually added shopping items.</p>:<div className="space-y-2">{shoppingItems.map(item=>{const ingredient=stock.find(i=>i.id===item.ingredientId);const requirement=requirements.find(r=>r.ingredient.id===item.ingredientId);return <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3"><div><b className="text-sm">{ingredient?.name??'Missing ingredient'}</b><p className="text-xs text-gray-500">To buy: {formatQuantity(item.quantity,item.unit)} · Current: {ingredient?formatQuantity(ingredient.quantity,ingredient.unit):'Unavailable'}{requirement&&requirement.shortage>0?' · Still short: '+formatQuantity(requirement.shortage,requirement.ingredient.unit):''}</p></div><div className="flex gap-2"><button disabled={!ingredient} onClick={()=>receive(item.ingredientId,item.quantity,item.unit,item.id)} className="rounded-lg bg-[#8e5e42] px-3 py-2 text-xs text-white disabled:opacity-50">Receive + add to stock</button><button onClick={()=>setShoppingItems(old=>old.filter(i=>i.id!==item.id))} className="rounded-lg border px-3 py-2 text-xs">Remove</button></div></div>})}</div>}</div>
+ </>
 }
 
-function PlanningPage() { const {tr}=useLanguage(); return <><PageHeading eyebrow="Workspace / Production" title="Production planning" description="A clear view of what needs to be baked and when." action={<button className="flex items-center gap-2 rounded-lg bg-[#8e5e42] px-4 py-2.5 text-sm font-semibold text-white"><Plus className="size-4" /> Schedule batch</button>} /><div className="rounded-2xl border border-[#ebe3da] bg-[#fffdf9] p-5"><div className="mb-5 flex items-center justify-between"><div><h2 className="font-serif text-lg font-bold">This week&apos;s production</h2><p className="mt-1 text-xs text-[#a29285]">Prioritized by delivery deadline</p></div><div className="flex items-center gap-2 text-xs text-[#9d8d80]"><span className="size-2 rounded-full bg-[#d19a4f]" /> Needs action <span className="ml-2 size-2 rounded-full bg-[#7b9d70]" /> Ready</div></div><div className="flex flex-col gap-3">{[['Alicia Wong','Peanut Biscuit + Butter Cookies','Today','Oct 28','In Progress'],['Benjamin Lee','Almond Biscuit','Tomorrow','Oct 29','Not started'],['Cindy Tan','Chocolate Chip','Oct 29','Oct 30','Scheduled']].map(([customer, item, start, due, status], i) => <div key={customer} className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#f0e8e0] p-4"><div className="flex items-center gap-3"><div className="flex size-10 items-center justify-center rounded-xl bg-[#f4e9df] text-[#9b674b]"><Factory className="size-5" /></div><div><div className="text-sm font-semibold">{customer}</div><div className="mt-1 text-xs text-[#96877b]">{item}</div></div></div><div className="text-xs"><span className="text-[#a49487]">Start </span><b>{start}</b></div><div className="text-xs"><span className="text-[#a49487]">Due </span><b>{due}</b></div><StatusPill status={status === 'Not started' ? 'Pending' : status === 'Scheduled' ? 'Good' : 'In Progress'} /><button className="rounded-lg border border-[#e6dace] px-3 py-2 text-[11px] font-semibold text-[#81553d]">{i === 0 ? 'View job' : 'Start'}</button></div>)}</div></div></> }
-
+function PlanningPage({orders,recipes,requirements,setActive}:{orders:Order[];recipes:Recipe[];requirements:ReturnType<typeof calculateRequirements>;setActive:(page:string)=>void}){
+ const {language}=useLanguage()
+ const activeOrders=orders.filter(o=>o.status!=='Completed'&&o.status!=='Cancelled').sort((a,b)=>new Date(a.date).getTime()-new Date(b.date).getTime())
+ const plans=planProduction(activeOrders.map(o=>({id:o.id,status:o.status,items:o.orderItems??[]})),recipes)
+ const short= requirements.filter(r=>r.shortage>0)
+ return <><PageHeading eyebrow="Workspace / Production" title="Production planning" description={language==='zh'?'根据未完成订单和每罐数量计算烘焙计划。':'Calculated from active orders, cans per recipe batch, and due dates.'} action={<button onClick={()=>setActive('Customer Orders')} className="rounded-lg bg-[#8e5e42] px-4 py-2.5 text-sm font-semibold text-white">View orders</button>}/>
+ {short.length>0&&<div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950"><AlertTriangle className="mr-2 inline size-4"/> {short.length} ingredient shortage(s) affect production. <button className="ml-2 underline" onClick={()=>setActive('Shopping List')}>Open shopping list</button></div>}
+ <div className="mb-5 grid gap-3 sm:grid-cols-3">{[['Active orders',activeOrders.length],['Cans to prepare',Number(plans.reduce((a,p)=>a+p.cans,0).toFixed(2))],['Total full batches',plans.reduce((a,p)=>a+p.batches,0)]].map(([name,value])=><div key={name} className="rounded-xl border bg-white p-4"><p className="text-xs text-[#998779]">{name}</p><p className="mt-1 text-2xl font-bold">{value}</p></div>)}</div>
+ <div className="rounded-2xl border bg-white p-5"><h2 className="font-serif text-lg font-bold">Production by biscuit type</h2><p className="mb-4 mt-1 text-xs text-[#96877b]">Batches are rounded up for planning; ingredient demand is calculated from exact pieces required, not full rounded batches.</p>{plans.length===0?<p className="py-6 text-sm text-gray-500">No active orders to produce.</p>:<div className="space-y-3">{plans.map(p=><div key={p.recipe.id} className="rounded-xl border p-4"><p className="font-semibold">{p.recipe.name}</p><p className="mt-1 text-sm">{p.cans} can(s) · {p.pieces} pcs · <b>{p.batches} batch(es)</b></p><p className="mt-1 text-xs text-gray-500">{p.recipe.yieldPieces} pcs / {p.recipe.cansPerBatch??1} cans per full batch</p></div>)}</div>}</div>
+ <div className="mt-5 rounded-2xl border bg-white p-5"><h2 className="mb-4 font-serif text-lg font-bold">Orders by delivery deadline</h2>{activeOrders.length===0?<p className="text-sm text-gray-500">No upcoming jobs.</p>:<div className="space-y-2">{activeOrders.map(o=><div key={o.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-3"><div><b className="text-sm">{o.customer}</b><p className="text-xs text-gray-500">{o.qty} · Due {o.date}</p></div><StatusPill status={o.status}/><button onClick={()=>setActive('Customer Orders')} className="rounded-lg border px-3 py-2 text-xs">Manage order</button></div>)}</div>}</div></>
+}
 function CalendarPage({ orders }: { orders: Order[] }) { const {tr}=useLanguage(); return <><PageHeading eyebrow="Workspace / Calendar" title="Order calendar" description="Stay ahead of every delivery and pickup deadline." action={<div className="flex items-center gap-2"><button className="rounded-lg border border-[#e4d9cf] bg-[#fffdf9] px-3 py-2 text-xs font-semibold">‹</button><span className="rounded-lg border border-[#e4d9cf] bg-[#fffdf9] px-4 py-2 text-xs font-semibold">October 2026</span><button className="rounded-lg border border-[#e4d9cf] bg-[#fffdf9] px-3 py-2 text-xs font-semibold">›</button></div>} /><div className="rounded-2xl border border-[#ebe3da] bg-[#fffdf9] p-4"><div className="grid grid-cols-7 border-b border-[#eee7df] pb-3 text-center text-[10px] font-bold uppercase tracking-wider text-[#b2a49a]">{['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d => <div key={d}>{d}</div>)}</div><div className="mt-2 grid grid-cols-7 gap-1">{Array.from({ length: 35 }, (_, i) => { const day = i - 3; const order = orders.find(o => Number(o.date.match(/\d+/)?.[0]) === day); return <div key={i} className={`min-h-[90px] rounded-lg border p-2 ${day === 27 ? 'border-[#bd8b6d] bg-[#fbf3ed]' : 'border-transparent hover:bg-[#faf6f1]'}`}><div className={`text-xs ${day === 27 ? 'font-bold text-[#8e5e42]' : 'text-[#a49589]'}`}>{day > 0 && day <= 31 ? day : ''}</div>{order && <div className="mt-2 rounded-md bg-[#f2e4d9] p-1.5 text-[10px] font-semibold leading-tight text-[#80563f]">{order.customer}<div className="mt-1 font-normal text-[#a07c68]">{order.items.split(',')[0]}</div></div>}</div> })}</div></div></> }
 
 function NotificationsPage({ orders, requirements, onNavigate }: { orders: Order[]; requirements: ReturnType<typeof calculateRequirements>; onNavigate: (page:string)=>void }) {
