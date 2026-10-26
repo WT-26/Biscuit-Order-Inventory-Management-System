@@ -213,7 +213,7 @@ function InventoryPage({ stock, setStock }: { stock: StockItem[]; setStock: Reac
   const [name,setName]=useState(''); const [quantity,setQuantity]=useState(0); const [minimum,setMinimum]=useState(0); const [unit,setUnit]=useState<Unit>('g'); const [open,setOpen]=useState(false)
   function addCatalog() {
     const existing=new Set(stock.map(item=>item.name.trim().toLowerCase()))
-    const additions=suggestedIngredients.filter(item=>!existing.has(item.name.toLowerCase()))
+    const additions=suggestedIngredients.filter(item=>!existing.has(item.name.toLowerCase()) && !(item.name==='Eggs' && existing.has('egg')))
     if(!additions.length){alert('All suggested ingredients already exist.');return}
     setStock(old=>[...old,...additions])
     alert(`Added ${additions.length} ingredients with 0 starting stock. Enter your actual quantities in Inventory.`)
