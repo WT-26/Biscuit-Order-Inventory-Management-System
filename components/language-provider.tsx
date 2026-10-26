@@ -4,6 +4,8 @@ export type Language = 'en' | 'zh'
 const chinese: Record<string,string> = {
   "Dashboard": "仪表板",
   "Customer Orders": "客户订单",
+  "All orders": "全部订单",
+  "No orders found": "没有符合条件的订单",
   "Biscuit Recipes": "饼干配方",
   "Ingredient Inventory": "原材料库存",
   "Ingredient Calculator": "原材料计算",
