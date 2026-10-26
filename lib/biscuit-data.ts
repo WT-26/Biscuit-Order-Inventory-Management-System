@@ -1,8 +1,8 @@
 export type Unit = 'g' | 'kg' | 'ml' | 'L' | 'pcs'
 export type StockItem = { id: string; name: string; quantity: number; minimum: number; unit: Unit }
 export type RecipeIngredient = { ingredientId: string; quantity: number; unit: Unit }
-export type Recipe = { id: string; name: string; yieldPieces: number; ingredients: RecipeIngredient[] }
-export type OrderItem = { recipeId: string; pieces: number }
+export type Recipe = { id: string; name: string; yieldPieces: number; cansPerBatch?: number; ingredients: RecipeIngredient[] }
+export type OrderItem = { recipeId: string; pieces?: number; cans?: number }
 export type DemandOrder = { id: string; status: string; items: OrderItem[] }
 export type Requirement = { ingredient: StockItem; required: number; available: number; shortage: number; orderIds: string[] }
 
@@ -18,11 +18,13 @@ export function calculateRequirements(orders: DemandOrder[], recipes: Recipe[], 
     if (order.status === 'Completed' || order.status === 'Cancelled') continue
     for (const item of order.items) {
       const recipe = recipes.find(r => r.id === item.recipeId)
-      if (!recipe || recipe.yieldPieces <= 0 || item.pieces <= 0) continue
+      if (!recipe || recipe.yieldPieces <= 0) continue
+      const pieces = item.cans !== undefined ? item.cans * (recipe.yieldPieces / (recipe.cansPerBatch || 1)) : (item.pieces ?? 0)
+      if (!Number.isFinite(pieces) || pieces <= 0) continue
       for (const component of recipe.ingredients) {
         const stock = inventory.find(i => i.id === component.ingredientId)
         if (!stock) continue
-        const amount = convert(component.quantity * item.pieces / recipe.yieldPieces, component.unit, stock.unit)
+        const amount = convert(component.quantity * pieces / recipe.yieldPieces, component.unit, stock.unit)
         const total = totals.get(stock.id) ?? { amount: 0, orders: new Set<string>() }
         total.amount += amount
         total.orders.add(order.id)
@@ -73,4 +75,26 @@ export function formatQuantity(quantity:number, unit:Unit):string {
   if(unit==='g'&&Math.abs(quantity)>=1000)return `${rounded(quantity/1000)} kg`
   if(unit==='ml'&&Math.abs(quantity)>=1000)return `${rounded(quantity/1000)} L`
   return `${rounded(quantity)} ${unit}`
+}
+
+export function getPiecesPerCan(recipe: Recipe): number {
+  return recipe.yieldPieces / (recipe.cansPerBatch || 1)
+}
+export function planProduction(orders: DemandOrder[], recipes: Recipe[]) {
+  const demands = new Map<string,{recipe:Recipe,cans:number,pieces:number,orderIds:string[]}>()
+  for (const order of orders) {
+    if(order.status==='Completed'||order.status==='Cancelled')continue
+    for(const item of order.items){
+      const recipe=recipes.find(r=>r.id===item.recipeId)
+      if(!recipe)continue
+      const pieces=item.cans!==undefined ? item.cans*getPiecesPerCan(recipe) : (item.pieces??0)
+      const cans=item.cans!==undefined ? item.cans : pieces/getPiecesPerCan(recipe)
+      if(!Number.isFinite(pieces)||pieces<=0)continue
+      const row=demands.get(recipe.id)??{recipe,cans:0,pieces:0,orderIds:[]}
+      row.pieces+=pieces;row.cans+=cans
+      if(!row.orderIds.includes(order.id))row.orderIds.push(order.id)
+      demands.set(recipe.id,row)
+    }
+  }
+  return [...demands.values()].map(row=>({...row,batches:Math.ceil(row.pieces/row.recipe.yieldPieces)}))
 }
