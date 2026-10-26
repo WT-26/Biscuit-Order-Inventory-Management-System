@@ -6,6 +6,9 @@ export const metadata: Metadata = {
   title: 'BiscuitFlow — Bakery Operations',
   description: 'Manage biscuit orders, recipes, inventory, and production in one warm workspace.',
   generator: 'v0.app',
+  applicationName: 'BiscuitFlow',
+  manifest: '/manifest.webmanifest',
+  appleWebApp: { capable: true, statusBarStyle: 'default', title: 'BiscuitFlow' },
   icons: {
     icon: [
       {
@@ -26,11 +29,8 @@ export const metadata: Metadata = {
 }
 
 export const viewport: Viewport = {
-  colorScheme: 'light dark',
-  themeColor: [
-    { media: '(prefers-color-scheme: light)', color: 'white' },
-    { media: '(prefers-color-scheme: dark)', color: 'black' },
-  ],
+  themeColor: '#8e5e42',
+  viewportFit: 'cover',
 }
 
 export default function RootLayout({
