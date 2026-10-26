@@ -62,7 +62,7 @@ export default function WelcomePage(){
      {error&&<p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{error}</p>}
      <button disabled={busy||checking} type="submit" className="w-full rounded-lg border border-[#8e5e42] px-4 py-3 text-sm font-bold text-[#7a4f37] disabled:opacity-50">{busy?'Signing in...':checking?'Checking session...':'Sign in to admin dashboard'}</button>
     </form>
-   </section>
+   </section>}
   </div>
  </main>
 }
