@@ -160,6 +160,9 @@ function BiscuitFlowPage() {
       })
     }
   },[shoppingItems,hydrated,client,user])
+  useEffect(()=>{
+    if(user&&roleChecked&&!isAdmin)window.location.replace('/')
+  },[user?.id,roleChecked,isAdmin])
   async function signIn(e:React.FormEvent<HTMLFormElement>){
     e.preventDefault();if(!client)return
     setBusy(true);setCloudError('')
