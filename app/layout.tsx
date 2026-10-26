@@ -9,23 +9,7 @@ export const metadata: Metadata = {
   applicationName: 'BiscuitFlow',
   manifest: '/manifest.webmanifest',
   appleWebApp: { capable: true, statusBarStyle: 'default', title: 'BiscuitFlow' },
-  icons: {
-    icon: [
-      {
-        url: '/icon-light-32x32.png',
-        media: '(prefers-color-scheme: light)',
-      },
-      {
-        url: '/icon-dark-32x32.png',
-        media: '(prefers-color-scheme: dark)',
-      },
-      {
-        url: '/icon.svg',
-        type: 'image/svg+xml',
-      },
-    ],
-    apple: '/apple-icon.png',
-  },
+  icons: { icon: '/favicon-32.png', apple: '/apple-icon.png' },
 }
 
 export const viewport: Viewport = {
