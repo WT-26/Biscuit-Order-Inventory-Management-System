@@ -1,6 +1,8 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { User } from '@supabase/supabase-js'
+import { getSupabase } from '@/lib/supabase'
 import { LanguageProvider, useLanguage } from '@/components/language-provider'
 import { calculateRequirements, sampleRecipes, sampleStock, type Recipe, type StockItem, type Unit, type OrderItem } from '@/lib/biscuit-data'
 import {
@@ -42,33 +44,90 @@ export default function Page() { return <LanguageProvider><BiscuitFlowPage /></L
 function BiscuitFlowPage() {
   const { language, setLanguage, tr } = useLanguage()
   const [active, setActive] = useState('Dashboard')
-  const [orders, setOrders] = useState<Order[]>(initialOrders)
-  const [recipes, setRecipes] = useState<Recipe[]>(sampleRecipes)
-  const [stock, setStock] = useState<StockItem[]>(sampleStock)
+  const [orders, setOrders] = useState<Order[]>([])
+  const [recipes, setRecipes] = useState<Recipe[]>([])
+  const [stock, setStock] = useState<StockItem[]>([])
   const [hydrated, setHydrated] = useState(false)
+  const [user,setUser] = useState<User|null>(null)
+  const [authChecked,setAuthChecked] = useState(false)
+  const [cloudError,setCloudError] = useState('')
+  const [busy,setBusy] = useState(false)
+  const previous = useRef({orders:new Map<string,string>(),recipes:new Map<string,string>(),stock:new Map<string,string>()})
   const [search, setSearch] = useState('')
   const [showAdd, setShowAdd] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
 
+  const client = getSupabase()
   useEffect(() => {
-    try {
-      const savedOrders = localStorage.getItem('biscuitflow-orders')
-      const savedRecipes = localStorage.getItem('biscuitflow-recipes')
-      const savedStock = localStorage.getItem('biscuitflow-stock')
-      if (savedOrders) setOrders(JSON.parse(savedOrders))
-      if (savedRecipes) setRecipes(JSON.parse(savedRecipes))
-      if (savedStock) setStock(JSON.parse(savedStock))
-    } catch (error) { console.error('Could not restore saved data', error) }
-    setHydrated(true)
-  }, [])
-  useEffect(() => {
-    if (!hydrated) return
-    try {
-      localStorage.setItem('biscuitflow-orders', JSON.stringify(orders))
-      localStorage.setItem('biscuitflow-recipes', JSON.stringify(recipes))
-      localStorage.setItem('biscuitflow-stock', JSON.stringify(stock))
-    } catch (error) { console.error('Could not save data', error) }
-  }, [orders, recipes, stock, hydrated])
+    if (!client) { setAuthChecked(true);return }
+    let live = true
+    client.auth.getUser().then(({data,error})=>{if(!live)return;if(error)setCloudError(error.message);setUser(data.user);setAuthChecked(true)})
+    const {data:{subscription}}=client.auth.onAuthStateChange((_event,session)=>{if(live)setUser(session?.user??null)})
+    return ()=>{live=false;subscription.unsubscribe()}
+  },[client])
+  useEffect(()=>{
+    if(!client||!user){setHydrated(false);return}
+    let live=true
+    setHydrated(false)
+    setCloudError('')
+    Promise.all([
+      client.from('biscuit_orders').select('*'),
+      client.from('biscuit_recipes').select('*'),
+      client.from('biscuit_stock').select('*'),
+    ]).then(([o,r,i])=>{
+      const error=o.error||r.error||i.error
+      if(!live)return
+      if(error){setCloudError(error.message);return}
+      const loadedOrders:Order[]=(o.data??[]).map(x=>({id:x.id,customer:x.customer,items:x.items,qty:x.qty,date:x.date,status:x.status as Status,method:x.method,shortage:x.shortage,orderItems:x.order_items??[]}))
+      const loadedRecipes:Recipe[]=(r.data??[]).map(x=>({id:x.id,name:x.name,yieldPieces:Number(x.yield_pieces),ingredients:x.ingredients??[]}))
+      const loadedStock:StockItem[]=(i.data??[]).map(x=>({id:x.id,name:x.name,quantity:Number(x.quantity),minimum:Number(x.minimum),unit:x.unit as Unit}))
+      previous.current={
+        orders:new Map(loadedOrders.map(x=>[x.id,JSON.stringify(x)])),
+        recipes:new Map(loadedRecipes.map(x=>[x.id,JSON.stringify(x)])),
+        stock:new Map(loadedStock.map(x=>[x.id,JSON.stringify(x)]))
+      }
+      setOrders(loadedOrders);setRecipes(loadedRecipes);setStock(loadedStock);setHydrated(true)
+    }).catch(e=>{if(live)setCloudError(String(e))})
+    return ()=>{live=false}
+  },[client,user?.id])
+  useEffect(()=>{
+    if(!hydrated||!client||!user)return
+    const changed=orders.filter(x=>previous.current.orders.get(x.id)!==JSON.stringify(x))
+    if(!changed.length)return
+    const rows=changed.map(x=>({owner_id:user.id,id:x.id,customer:x.customer,items:x.items,qty:x.qty,date:x.date,status:x.status,method:x.method,shortage:x.shortage??false,order_items:x.orderItems??[]}))
+    client.from('biscuit_orders').upsert(rows,{onConflict:'owner_id,id'}).then(({error})=>{
+      if(error)setCloudError('Order save failed: '+error.message)
+      else changed.forEach(x=>previous.current.orders.set(x.id,JSON.stringify(x)))
+    })
+  },[orders,hydrated,client,user])
+  useEffect(()=>{
+    if(!hydrated||!client||!user)return
+    const changed=recipes.filter(x=>previous.current.recipes.get(x.id)!==JSON.stringify(x))
+    if(!changed.length)return
+    const rows=changed.map(x=>({owner_id:user.id,id:x.id,name:x.name,yield_pieces:x.yieldPieces,ingredients:x.ingredients}))
+    client.from('biscuit_recipes').upsert(rows,{onConflict:'owner_id,id'}).then(({error})=>{
+      if(error)setCloudError('Recipe save failed: '+error.message)
+      else changed.forEach(x=>previous.current.recipes.set(x.id,JSON.stringify(x)))
+    })
+  },[recipes,hydrated,client,user])
+  useEffect(()=>{
+    if(!hydrated||!client||!user)return
+    const changed=stock.filter(x=>previous.current.stock.get(x.id)!==JSON.stringify(x))
+    if(!changed.length)return
+    const rows=changed.map(x=>({owner_id:user.id,id:x.id,name:x.name,quantity:x.quantity,minimum:x.minimum,unit:x.unit}))
+    client.from('biscuit_stock').upsert(rows,{onConflict:'owner_id,id'}).then(({error})=>{
+      if(error)setCloudError('Stock save failed: '+error.message)
+      else changed.forEach(x=>previous.current.stock.set(x.id,JSON.stringify(x)))
+    })
+  },[stock,hydrated,client,user])
+  async function signIn(e:React.FormEvent<HTMLFormElement>){
+    e.preventDefault();if(!client)return
+    setBusy(true);setCloudError('')
+    const data=new FormData(e.currentTarget)
+    const {error}=await client.auth.signInWithPassword({email:String(data.get('email')),password:String(data.get('password'))})
+    if(error)setCloudError(error.message)
+    setBusy(false)
+  }
   const requirements = useMemo(() => calculateRequirements(orders.map(o => ({ id: o.id, status: o.status, items: o.orderItems ?? [] })), recipes, stock), [orders, recipes, stock])
   const shortages = requirements.filter(r => r.shortage > 0)
   const urgentOrders = orders.filter(o => o.status !== 'Completed' && o.status !== 'Cancelled' && new Date(o.date).getTime() < Date.now() + 3 * 86400000)
@@ -84,9 +143,13 @@ function BiscuitFlowPage() {
     const quantities = items.map((item) => `${item}: ${data.get(`quantity-${item}`) || 1} pcs`)
     const dueDate = String(data.get('dueDate') || '')
     const formattedDueDate = dueDate ? new Date(`${dueDate}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }) : 'Nov 06, 2026'
-    setOrders([{ id: `ORD-${1050 + orders.length}`, customer, items: items.join(', ') || 'Peanut Biscuit', qty: quantities.join(' · ') || 'Peanut Biscuit: 1 pcs', date: formattedDueDate, status: 'Pending', method: 'Pickup', orderItems }, ...orders]); setShowAdd(false)
+    setOrders([{ id: crypto.randomUUID(), customer, items: items.join(', ') || 'Peanut Biscuit', qty: quantities.join(' · ') || 'Peanut Biscuit: 1 pcs', date: formattedDueDate, status: 'Pending', method: 'Pickup', orderItems }, ...orders]); setShowAdd(false)
   }
 
+  if (!client) return <div className="mx-auto mt-24 max-w-md rounded-xl border p-8"><h1 className="text-2xl font-bold">Supabase setup required</h1><p className="mt-3">Add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY to .env.local, then restart the development server.</p></div>
+  if (!authChecked) return <div className="p-10">Checking login...</div>
+  if (!user) return <div className="flex min-h-screen items-center justify-center bg-[#f8f5f0] p-4"><form onSubmit={signIn} className="w-full max-w-md rounded-2xl border bg-white p-7 shadow-sm"><h1 className="font-serif text-2xl font-bold">BiscuitFlow</h1><p className="mt-2 text-sm text-gray-600">Private admin login / 管理员登录</p><label className="mt-5 block text-sm">Email<input name="email" type="email" required autoComplete="email" className="mt-1 w-full rounded-lg border p-2"/></label><label className="mt-4 block text-sm">Password / 密码<input name="password" type="password" required autoComplete="current-password" className="mt-1 w-full rounded-lg border p-2"/></label>{cloudError&&<p role="alert" className="mt-3 text-sm text-red-700">{cloudError}</p>}<button disabled={busy} className="mt-5 w-full rounded-lg bg-[#8e5e42] p-3 font-semibold text-white">{busy?'Signing in...':'Sign in / 登录'}</button></form></div>
+  if (!hydrated) return <div className="p-10">{cloudError?<div role="alert" className="text-red-700">{cloudError}<button className="ml-4 underline" onClick={()=>location.reload()}>Retry</button></div>:'Loading your cloud data / 正在读取云端资料...'}</div>
   return <div className="min-h-screen bg-[#f8f5f0] text-[#302923]">
     <aside className={`fixed inset-y-0 left-0 z-30 flex w-[250px] flex-col border-r border-[#ebe4dc] bg-[#fffdf9] px-4 py-5 transition-transform lg:translate-x-0 ${menuOpen ? 'translate-x-0' : '-translate-x-full'}`}>
       <div className="flex items-center gap-3 px-3"><div className="flex size-10 items-center justify-center rounded-xl bg-[#8e5e42] text-white shadow-sm"><Cookie /></div><div><div className="font-serif text-lg font-bold tracking-tight">BiscuitFlow</div><div className="text-[10px] font-medium uppercase tracking-[.16em] text-[#a58e7b]">{tr('Bakery operations')}</div></div></div>
@@ -97,8 +160,8 @@ function BiscuitFlowPage() {
     </aside>
     {menuOpen && <button aria-label="Close menu" onClick={() => setMenuOpen(false)} className="fixed inset-0 z-20 bg-black/20 lg:hidden" />}
     <main className="lg:ml-[250px]">
-      <header className="sticky top-0 z-10 flex h-[74px] items-center justify-between border-b border-[#ebe4dc] bg-[#f8f5f0]/90 px-5 backdrop-blur-md sm:px-8"><div className="flex items-center gap-3"><button onClick={() => setMenuOpen(true)} className="rounded-lg p-2 hover:bg-white lg:hidden" aria-label="Open menu"><Menu className="size-5" /></button><div className="hidden text-sm text-[#a08e80] sm:block">Tuesday, October 27, 2026</div><div className="sm:hidden text-sm font-semibold">{tr(active)}</div></div><div className="flex items-center gap-3"><select aria-label="Language / 语言" value={language} onChange={e => setLanguage(e.target.value as 'en' | 'zh')} className="rounded-lg border border-[#e5dbd1] bg-white px-2 py-1.5 text-xs font-semibold"><option value="en">English</option><option value="zh">简体中文</option></select><div className="relative hidden md:block"><Search className="absolute left-3 top-2.5 size-4 text-[#b3a69b]" /><input value={search} onChange={e => setSearch(e.target.value)} placeholder={tr("Search orders, recipes...")} className="h-9 w-56 rounded-lg border border-[#e9e1d9] bg-white pl-9 pr-3 text-xs outline-none placeholder:text-[#b8ada3] focus:border-[#bd8b6d]" /></div><button className="relative rounded-lg p-2 text-[#88796d] hover:bg-white"><Bell className="size-[18px]" /><span className="absolute right-1 top-1 size-1.5 rounded-full bg-[#bd6b48]" /></button><div className="hidden h-7 w-px bg-[#e6ded5] sm:block" /><div className="flex size-8 items-center justify-center rounded-full bg-[#d7b29a] text-[11px] font-bold text-white">MS</div></div></header>
-      <div className="mx-auto max-w-[1400px] p-5 sm:p-8">
+      <header className="sticky top-0 z-10 flex h-[74px] items-center justify-between border-b border-[#ebe4dc] bg-[#f8f5f0]/90 px-5 backdrop-blur-md sm:px-8"><div className="flex items-center gap-3"><button onClick={() => setMenuOpen(true)} className="rounded-lg p-2 hover:bg-white lg:hidden" aria-label="Open menu"><Menu className="size-5" /></button><div className="hidden text-sm text-[#a08e80] sm:block">Tuesday, October 27, 2026</div><div className="sm:hidden text-sm font-semibold">{tr(active)}</div></div><div className="flex items-center gap-3"><select aria-label="Language / 语言" value={language} onChange={e => setLanguage(e.target.value as 'en' | 'zh')} className="rounded-lg border border-[#e5dbd1] bg-white px-2 py-1.5 text-xs font-semibold"><option value="en">English</option><option value="zh">简体中文</option></select><div className="relative hidden md:block"><Search className="absolute left-3 top-2.5 size-4 text-[#b3a69b]" /><input value={search} onChange={e => setSearch(e.target.value)} placeholder={tr("Search orders, recipes...")} className="h-9 w-56 rounded-lg border border-[#e9e1d9] bg-white pl-9 pr-3 text-xs outline-none placeholder:text-[#b8ada3] focus:border-[#bd8b6d]" /></div><button className="relative rounded-lg p-2 text-[#88796d] hover:bg-white"><Bell className="size-[18px]" /><span className="absolute right-1 top-1 size-1.5 rounded-full bg-[#bd6b48]" /></button><div className="hidden h-7 w-px bg-[#e6ded5] sm:block" /><button className="rounded-lg border border-[#e5dbd1] px-2 py-1.5 text-xs" onClick={()=>client.auth.signOut()}>Sign out / 登出</button><div className="flex size-8 items-center justify-center rounded-full bg-[#d7b29a] text-[11px] font-bold text-white">MS</div></div></header>
+      <div className="mx-auto max-w-[1400px] p-5 sm:p-8">{cloudError&&<div role="alert" className="mb-4 rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-800">{cloudError}</div>}
         {active === 'Dashboard' && (shortages.length > 0 || urgentOrders.length > 0) && <div className="mb-5 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950"><AlertTriangle className="mr-2 inline size-4" />{shortages.length} ingredient shortages · {urgentOrders.length} orders due soon or overdue. <button className="ml-2 font-semibold underline" onClick={() => setActive('Ingredient Calculator')}>Review requirements</button></div>}
         {active === 'Dashboard' && <Dashboard counts={counts} orders={orders} setActive={setActive} />}
         {active === 'Customer Orders' && <OrdersPage orders={filtered} setOrders={setOrders} onAdd={() => setShowAdd(true)} />}
