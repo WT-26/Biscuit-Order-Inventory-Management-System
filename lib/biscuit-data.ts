@@ -1,7 +1,7 @@
 export type Unit = 'g' | 'kg' | 'ml' | 'L' | 'pcs'
 export type StockItem = { id: string; name: string; quantity: number; minimum: number; unit: Unit }
 export type RecipeIngredient = { ingredientId: string; quantity: number; unit: Unit }
-export type Recipe = { id: string; name: string; yieldPieces: number; cansPerBatch?: number; ingredients: RecipeIngredient[] }
+export type Recipe = { id: string; name: string; yieldPieces: number; cansPerBatch?: number; published?: boolean; ingredients: RecipeIngredient[] }
 export type OrderItem = { recipeId: string; pieces?: number; cans?: number }
 export type DemandOrder = { id: string; status: string; items: OrderItem[] }
 export type Requirement = { ingredient: StockItem; required: number; available: number; shortage: number; orderIds: string[] }
