@@ -50,3 +50,27 @@ export const sampleRecipes: Recipe[] = [
   { id: 'almond-recipe', name: 'Almond Biscuit', yieldPieces: 60, ingredients: [{ ingredientId: 'almond', quantity: 300, unit: 'g' }, { ingredientId: 'flour', quantity: 250, unit: 'g' }] },
   { id: 'chocolate-recipe', name: 'Chocolate Chip', yieldPieces: 100, ingredients: [{ ingredientId: 'flour', quantity: 300, unit: 'g' }, { ingredientId: 'butter', quantity: 150, unit: 'g' }] },
 ]
+
+// Catalog quantities start at zero because actual stock has not been provided.
+// Eggs use pcs; liquids use ml; other ingredients use g.
+export const suggestedIngredients: StockItem[] = [
+  ['Butter','g'],['Sugar','g'],['Cake Flour','g'],['Bread Flour','g'],
+  ['Macadamia','g'],['Dark Chocolate','g'],['Pineapple Paste','g'],['Eggs','pcs'],
+  ['Peanut','g'],['Peanut Oil','ml'],['Red Fermented Beancurd','g'],['Maltose','g'],
+  ['Sesame Seed','g'],['Candied Wintermelon','g'],['Vegetable Oil','ml'],
+  ['White Pepper Powder','g'],['Five Spice Powder','g'],['Brown Sugar','g'],
+  ['Peanut Jam','g'],['Peanut Powder','g'],['Milk','ml'],['Ground Almonds','g'],
+  ['Superfine Flour','g'],['Potato Starch','g'],['Icing Sugar','g'],['Cornflakes','g'],
+  ['Oats','g'],['Cranberries','g'],['Almond Powder','g'],['Cocoa Powder','g'],
+  ['Dark Chocolate Chip','g'],['Walnut','g']
+].map(([name,unit])=>({
+ id:'catalog-'+name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/-$/,''),
+ name,quantity:0,minimum:0,unit:unit as Unit
+}))
+export function formatQuantity(quantity:number, unit:Unit):string {
+  if(!Number.isFinite(quantity))return '—'
+  const rounded=(n:number)=>new Intl.NumberFormat('en-US',{maximumFractionDigits:3}).format(Number(n.toFixed(3)))
+  if(unit==='g'&&Math.abs(quantity)>=1000)return `${rounded(quantity/1000)} kg`
+  if(unit==='ml'&&Math.abs(quantity)>=1000)return `${rounded(quantity/1000)} L`
+  return `${rounded(quantity)} ${unit}`
+}
