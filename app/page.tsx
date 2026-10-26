@@ -78,7 +78,8 @@ function BiscuitFlowPage() {
       client.from('biscuit_stock').select('*'),
       client.from('biscuit_shopping_items').select('*'),
     ]).then(([o,r,i,shopping])=>{
-      const error=o.error||r.error||i.error||shopping.error
+      const error=o.error||r.error||i.error
+      if(shopping.error)setCloudError('Shopping list setup needed: run 20261026_cans_shopping.sql in Supabase SQL Editor. '+shopping.error.message)
       if(!live)return
       if(error){setCloudError(error.message);return}
       const loadedOrders:Order[]=(o.data??[]).map(x=>({id:x.id,customer:x.customer,items:x.items,qty:x.qty,date:x.date,status:x.status as Status,method:x.method,shortage:x.shortage,orderItems:x.order_items??[]}))
@@ -239,7 +240,7 @@ function RecipesPage({ recipes, setRecipes, stock }: { recipes: Recipe[]; setRec
   function save(e: React.FormEvent) {
     e.preventDefault()
     if (!name.trim() || yieldPieces <= 0 || !Number.isInteger(yieldPieces) || cansPerBatch <= 0 || !Number.isInteger(cansPerBatch) || yieldPieces % cansPerBatch !== 0 || parts.length === 0 || parts.some(p => !p.ingredientId || p.quantity <= 0) || new Set(parts.map(p => p.ingredientId)).size !== parts.length) {
-      alert('Enter a name, positive yield and valid, unique ingredients.'); return
+      alert('Enter a valid recipe: positive whole-number pieces and cans, pieces evenly divisible by cans, and unique ingredients with positive quantities.'); return
     }
     const record: Recipe = { id: editing?.id ?? crypto.randomUUID(), name: name.trim(), yieldPieces, cansPerBatch, ingredients: parts }
     setRecipes(old => editing ? old.map(r => r.id === editing.id ? record : r) : [...old, record])
