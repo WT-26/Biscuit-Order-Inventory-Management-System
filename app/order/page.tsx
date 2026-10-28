@@ -1,6 +1,5 @@
 'use client'
 import {useEffect,useState} from 'react'
-import Link from 'next/link'
 import {Cookie,Plus,Minus,ShoppingBag,CheckCircle2} from 'lucide-react'
 type Product={id:string;name:string}
 export default function CustomerPage(){
@@ -33,7 +32,7 @@ export default function CustomerPage(){
  }
  return <main className="min-h-screen bg-[#f8f5f0] px-4 py-8 text-[#302923] sm:py-14">
  <div className="mx-auto max-w-3xl">
- <header className="mb-8 flex flex-wrap items-center justify-between gap-4"><div className="flex items-center gap-3"><div className="rounded-xl bg-[#8e5e42] p-3 text-white"><Cookie/></div><div><h1 className="font-serif text-2xl font-bold">Tan Bakery</h1><p className="text-sm text-[#75675c]">Fresh biscuits, ordered by the can</p></div></div><Link href="/" className="rounded-lg border border-[#dbcabb] px-4 py-2 text-sm font-semibold text-[#77513c]">Admin sign in</Link></header>
+ <header className="mb-8 flex flex-wrap items-center justify-between gap-4"><div className="flex items-center gap-3"><div className="rounded-xl bg-[#8e5e42] p-3 text-white"><Cookie/></div><div><h1 className="font-serif text-2xl font-bold">Tan Bakery</h1><p className="text-sm text-[#75675c]">Fresh biscuits, ordered by the can</p></div></div></header>
  {receipt?<div role="status" className="rounded-2xl border bg-white p-8 text-center shadow-sm"><CheckCircle2 className="mx-auto mb-4 size-12 text-green-700"/><h2 className="font-serif text-2xl font-bold">Order received!</h2><p className="mt-2 text-sm">Your request has been sent to the bakery for review.</p><p className="mt-4 break-all text-sm font-medium">Reference: {receipt}</p><p className="mt-3 text-sm text-[#78685d]">Please save this reference. This is not a payment confirmation.</p><button onClick={()=>setReceipt('')} className="mt-6 rounded-lg bg-[#8e5e42] px-5 py-3 text-white">Place another order</button></div>:
  <form onSubmit={submit} className="space-y-6">
  <section className="rounded-2xl border border-[#ebdfd4] bg-white p-5 shadow-sm sm:p-7"><h2 className="font-serif text-xl font-bold">Choose your biscuits</h2><p className="mt-1 text-sm text-[#76685c]">Each quantity represents cans, not individual biscuits. Select multiple types.</p>
