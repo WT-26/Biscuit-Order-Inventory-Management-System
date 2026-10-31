@@ -7,7 +7,7 @@ import {NextRequest,NextResponse} from 'next/server'
  * This is deployment-level route isolation; Supabase Auth + RLS remain mandatory.
  */
 export function proxy(request: NextRequest) {
-  const mode = process.env.SITE_MODE === 'admin' ? 'admin' : 'customer'
+  const mode = process.env.SITE_MODE === 'customer' ? 'customer' : 'admin'
   const { pathname } = request.nextUrl
 
   // Always prevent a public customer deployment from serving the admin route.
