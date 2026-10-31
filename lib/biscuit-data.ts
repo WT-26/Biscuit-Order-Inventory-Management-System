@@ -108,6 +108,15 @@ export const suggestedIngredients: StockItem[] = [
  id:'catalog-'+name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/-$/,''),
  name,quantity:0,minimum:0,unit:unit as Unit
 }))
+/** Human-friendly display for shortages: prefer kg, L and pieces without altering stored units. */
+export function formatAlertQuantity(quantity:number,unit:Unit):string {
+ if(!Number.isFinite(quantity))return '—'
+ const value=unit==='g'?quantity/1000:unit==='ml'?quantity/1000:quantity
+ const displayUnit=unit==='g'?'kg':unit==='ml'?'L':unit==='pcs'?'pieces':unit
+ const formatted=new Intl.NumberFormat('en-US',{maximumFractionDigits:4}).format(Number(value.toFixed(4)))
+ return `${formatted} ${displayUnit}`
+}
+
 export function formatQuantity(quantity:number, unit:Unit):string {
   if(!Number.isFinite(quantity))return '—'
   const rounded=(n:number)=>new Intl.NumberFormat('en-US',{maximumFractionDigits:3}).format(Number(n.toFixed(3)))
