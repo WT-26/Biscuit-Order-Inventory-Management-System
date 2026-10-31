@@ -28,5 +28,7 @@ export async function POST(request:Request){
  if(b.name.length>100||b.phone.length>24||b.email.length>180||b.dueDate.length!==10||b.items.length>10)return NextResponse.json({error:'Invalid order size'},{status:400})
  const {data,error}=await db.rpc('submit_guest_biscuit_order',{p_name:b.name,p_phone:b.phone,p_email:b.email,p_due_date:b.dueDate,p_items:b.items})
  if(error)return NextResponse.json({error:error.message},{status:400})
- return NextResponse.json({orderId:data},{status:201,headers:{'Cache-Control':'no-store'}})
+ const receipt=await db.rpc('guest_order_total',{p_order_id:data})
+ if(receipt.error||receipt.data===null)return NextResponse.json({error:'Order saved but price receipt unavailable. Please contact the bakery.',orderId:data},{status:503})
+ return NextResponse.json({orderId:data,totalPrice:Number(receipt.data)},{status:201,headers:{'Cache-Control':'no-store'}})
 }
