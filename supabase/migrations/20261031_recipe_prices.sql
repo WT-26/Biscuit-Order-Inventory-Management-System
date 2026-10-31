@@ -7,6 +7,8 @@ alter table public.biscuit_orders
  add column if not exists total_price numeric(12,2)
  check (total_price >= 0);
 
+-- Return-column signature changed: drop old public catalog RPC before recreation.
+drop function if exists public.guest_biscuit_catalog();
 create or replace function public.guest_biscuit_catalog()
 returns table(id text,name text,price_per_can numeric)
 language sql stable security definer set search_path=''
