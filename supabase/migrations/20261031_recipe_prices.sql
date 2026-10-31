@@ -48,7 +48,7 @@ begin
   v_quantity:=(v_item->>'cans')::numeric;
   if v_quantity<1 or v_quantity>50 then raise exception 'Quantity must be 1 to 50 cans';end if;
   if (v_item->>'recipeId')=any(v_seen) then raise exception 'Duplicate biscuit type';end if;
-  select r.id,r.name into v_recipe from public.biscuit_recipes r where r.id=v_item->>'recipeId' and r.owner_id=v_owner and r.is_published and r.price_per_can>0;
+  select r.id,r.name,r.price_per_can into v_recipe from public.biscuit_recipes r where r.id=v_item->>'recipeId' and r.owner_id=v_owner and r.is_published and r.price_per_can>0;
   if not found then raise exception 'Biscuit unavailable';end if;
   v_seen:=array_append(v_seen,v_recipe.id);
   v_total:=v_total+v_quantity::integer;
