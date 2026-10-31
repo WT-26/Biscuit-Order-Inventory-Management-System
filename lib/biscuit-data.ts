@@ -111,9 +111,10 @@ export const suggestedIngredients: StockItem[] = [
 /** Human-friendly display for shortages: prefer kg, L and pieces without altering stored units. */
 export function formatAlertQuantity(quantity:number,unit:Unit):string {
  if(!Number.isFinite(quantity))return '—'
- const value=unit==='g'?quantity/1000:unit==='ml'?quantity/1000:quantity
- const displayUnit=unit==='g'?'kg':unit==='ml'?'L':unit==='pcs'?'pieces':unit
- const formatted=new Intl.NumberFormat('en-US',{maximumFractionDigits:4}).format(Number(value.toFixed(4)))
+ const abs=Math.abs(quantity)
+ const value=unit==='g'&&abs>=1000?quantity/1000:unit==='ml'&&abs>=1000?quantity/1000:quantity
+ const displayUnit=unit==='g'&&abs>=1000?'kg':unit==='ml'&&abs>=1000?'L':unit==='pcs'?'pieces':unit
+ const formatted=new Intl.NumberFormat('en-US',{maximumFractionDigits:3}).format(Number(value.toFixed(3)))
  return `${formatted} ${displayUnit}`
 }
 
