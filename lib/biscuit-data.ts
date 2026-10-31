@@ -55,6 +55,47 @@ export const sampleRecipes: Recipe[] = [
 
 // Catalog quantities start at zero because actual stock has not been provided.
 // Eggs use pcs; liquids use ml; other ingredients use g.
+
+const ingredientChinese:Record<string,string> = {
+ "Butter": "黄油",
+ "Sugar": "白糖",
+ "Cake Flour": "低筋面粉",
+ "Bread Flour": "高筋面粉",
+ "Macadamia": "夏威夷果",
+ "Dark Chocolate": "黑巧克力",
+ "Pineapple Paste": "黄梨馅",
+ "Eggs": "鸡蛋",
+ "Peanut": "花生",
+ "Peanut Oil": "花生油",
+ "Red Fermented Beancurd": "南乳",
+ "Maltose": "麦芽糖",
+ "Sesame Seed": "芝麻",
+ "Candied Wintermelon": "糖冬瓜",
+ "Vegetable Oil": "植物油",
+ "White Pepper Powder": "白胡椒粉",
+ "Five Spice Powder": "五香粉",
+ "Brown Sugar": "红糖",
+ "Peanut Jam": "花生酱",
+ "Peanut Powder": "花生粉",
+ "Milk": "牛奶",
+ "Ground Almonds": "杏仁碎",
+ "Superfine Flour": "特幼面粉",
+ "Potato Starch": "马铃薯淀粉",
+ "Icing Sugar": "糖粉",
+ "Cornflakes": "玉米片",
+ "Oats": "燕麦",
+ "Cranberries": "蔓越莓",
+ "Almond Powder": "杏仁粉",
+ "Cocoa Powder": "可可粉",
+ "Dark Chocolate Chip": "黑巧克力豆",
+ "Walnut": "核桃"
+}
+export function bilingualIngredient(name:string):string {
+ const base=name.trim().replace(/\s*[（(][\u4e00-\u9fff]+[）)]\s*$/u,'')
+ const chinese=ingredientChinese[base.toLowerCase().replace(/\b\w/g,c=>c.toUpperCase())]??Object.entries(ingredientChinese).find(([en])=>en.toLowerCase()===base.toLowerCase())?.[1]
+ return chinese?`${base} (${chinese})`:name
+}
+
 export const suggestedIngredients: StockItem[] = [
   ['Butter','g'],['Sugar','g'],['Cake Flour','g'],['Bread Flour','g'],
   ['Macadamia','g'],['Dark Chocolate','g'],['Pineapple Paste','g'],['Eggs','pcs'],
