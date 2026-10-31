@@ -2,6 +2,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 export type Language = 'en' | 'zh'
 const chinese: Record<string,string> = {
+  "Update available quantity": "更新库存数量",
   "Dashboard": "仪表板",
   "Customer Orders": "客户订单",
   "All orders": "全部订单",
