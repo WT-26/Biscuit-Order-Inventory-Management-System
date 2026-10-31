@@ -12,30 +12,28 @@ export function convert(quantity: number, from: Unit, to: Unit): number {
   if (dimension(from) !== dimension(to)) throw new Error(`Cannot convert ${from} to ${to}`)
   return quantity * factors[from] / factors[to]
 }
-export function calculateRequirements(orders: DemandOrder[], recipes: Recipe[], inventory: StockItem[]): Requirement[] {
-  const totals = new Map<string, { amount: number; orders: Set<string> }>()
-  for (const order of orders) {
-    if (order.status === 'Completed' || order.status === 'Cancelled') continue
-    for (const item of order.items) {
-      const recipe = recipes.find(r => r.id === item.recipeId)
-      if (!recipe || recipe.yieldPieces <= 0) continue
-      const pieces = item.cans !== undefined ? item.cans * (recipe.yieldPieces / (recipe.cansPerBatch || 1)) : (item.pieces ?? 0)
-      if (!Number.isFinite(pieces) || pieces <= 0) continue
-      for (const component of recipe.ingredients) {
-        const stock = inventory.find(i => i.id === component.ingredientId)
-        if (!stock) continue
-        const amount = convert(component.quantity * pieces / recipe.yieldPieces, component.unit, stock.unit)
-        const total = totals.get(stock.id) ?? { amount: 0, orders: new Set<string>() }
-        total.amount += amount
-        total.orders.add(order.id)
-        totals.set(stock.id, total)
-      }
+export function calculateRequirements(orders: DemandOrder[], recipes: Recipe[], inventory: StockItem[], availableBaked:Record<string,number>={}): Requirement[] {
+  const totals = new Map<string,{amount:number;orders:Set<string>}>()
+  const outstanding = planProduction(orders,recipes)
+  for(const plan of outstanding){
+    const recipe=plan.recipe
+    const unbakedCans=Math.max(0,Math.ceil(plan.cans)-(availableBaked[recipe.id]??0))
+    if(!unbakedCans)continue
+    const batches=Math.ceil(unbakedCans/(recipe.cansPerBatch||1))
+    for(const part of recipe.ingredients){
+      const stock=inventory.find(i=>i.id===part.ingredientId)
+      if(!stock)continue
+      const amount=convert(part.quantity*batches,part.unit,stock.unit)
+      const total=totals.get(stock.id)??{amount:0,orders:new Set<string>()}
+      total.amount+=amount
+      plan.orderIds.forEach(id=>total.orders.add(id))
+      totals.set(stock.id,total)
     }
   }
-  return inventory.map(ingredient => {
-    const entry = totals.get(ingredient.id)
-    const required = entry?.amount ?? 0
-    return { ingredient, required, available: ingredient.quantity, shortage: Math.max(0, required - ingredient.quantity), orderIds: [...(entry?.orders ?? [])] }
+  return inventory.map(ingredient=>{
+    const entry=totals.get(ingredient.id)
+    const required=entry?.amount??0
+    return {ingredient,required,available:ingredient.quantity,shortage:Math.max(0,required-ingredient.quantity),orderIds:[...(entry?.orders??[])]}
   })
 }
 export const sampleStock: StockItem[] = [
