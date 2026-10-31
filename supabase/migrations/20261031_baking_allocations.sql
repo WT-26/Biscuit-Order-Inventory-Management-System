@@ -22,13 +22,13 @@ create or replace function public.allocate_baking_on_order_completion()
 returns trigger language plpgsql security definer set search_path='' as $$
 declare item jsonb; v_recipe text; v_cans integer; v_required integer; v_produced bigint; v_consumed bigint;
 begin
- if tg_op='UPDATE' and old.status=new.status then return new; end if;
+ if old.status=new.status then return new; end if;
  -- Serialize completion against other order updates from the same bakery.
  perform pg_advisory_xact_lock(hashtext(new.owner_id::text));
- if tg_op='UPDATE' and old.status='Completed' and new.status<>'Completed' then
+ if old.status='Completed' and new.status<>'Completed' then
   delete from public.biscuit_baking_allocations where owner_id=new.owner_id and order_id=new.id;
  end if;
- if new.status='Completed' and (tg_op='INSERT' or old.status<>'Completed') then
+ if new.status='Completed' and old.status<>'Completed' then
   for item in select value from jsonb_array_elements(coalesce(new.order_items,'[]'::jsonb)) loop
    v_recipe:=item->>'recipeId';
    if not (item ? 'cans') then
@@ -55,5 +55,5 @@ begin
 end$$;
 revoke all on function public.allocate_baking_on_order_completion() from public,anon,authenticated;
 drop trigger if exists baking_allocation_on_status on public.biscuit_orders;
-create trigger baking_allocation_on_status after insert or update of status on public.biscuit_orders
+create trigger baking_allocation_on_status after update of status on public.biscuit_orders
  for each row execute function public.allocate_baking_on_order_completion();
