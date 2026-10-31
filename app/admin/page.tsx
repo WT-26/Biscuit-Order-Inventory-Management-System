@@ -14,6 +14,7 @@ import {
 type Status = 'Pending' | 'In Progress' | 'Completed' | 'Cancelled'
 type Order = { id: string; customer: string; items: string; qty: string; date: string; status: Status; method: string; shortage?: boolean; orderItems?: OrderItem[] }
 
+type BakingAllocation = {orderId:string;recipeId:string;cans:number}
 type BakingEvent = {id:string;recipeId:string;cans:number;bakedAt:string;note:string}
 type GuestContact = { order_id:string; phone:string; email:string }
 type ShoppingItem = { id:string; ingredientId:string; quantity:number; unit:Unit }
@@ -53,6 +54,7 @@ function BiscuitFlowPage() {
   const [guestContacts,setGuestContacts]=useState<Record<string,GuestContact>>({})
   const [shoppingItems,setShoppingItems]=useState<ShoppingItem[]>([])
   const [bakingEvents,setBakingEvents]=useState<BakingEvent[]>([])
+  const [bakingAllocations,setBakingAllocations]=useState<BakingAllocation[]>([])
   const [bakeSaving,setBakeSaving]=useState(false)
   const [hydrated, setHydrated] = useState(false)
   const [user,setUser] = useState<User|null>(null)
@@ -98,8 +100,9 @@ function BiscuitFlowPage() {
       client.from('biscuit_shopping_items').select('*'),
       client.from('biscuit_guest_order_contacts').select('order_id,phone,email'),
       client.from('biscuit_baking_events').select('id,recipe_id,cans,baked_at,note').order('baked_at',{ascending:false}),
-    ]).then(([o,r,i,shopping,contacts,baking])=>{
-      const error=o.error||r.error||i.error||contacts.error||baking.error
+      client.from('biscuit_baking_allocations').select('order_id,recipe_id,cans'),
+    ]).then(([o,r,i,shopping,contacts,baking,allocations])=>{
+      const error=o.error||r.error||i.error||contacts.error||baking.error||allocations.error
       if(shopping.error)setCloudError('Shopping list setup needed: run 20261026_cans_shopping.sql in Supabase SQL Editor. '+shopping.error.message)
       if(!live)return
       if(error){setCloudError(error.message);return}
@@ -113,7 +116,7 @@ function BiscuitFlowPage() {
         stock:new Map(loadedStock.map(x=>[x.id,JSON.stringify(x)])),
         shopping:new Map(loadedShopping.map(x=>[x.id,JSON.stringify(x)]))
       }
-      setBakingEvents((baking.data??[]).map(x=>({id:x.id,recipeId:x.recipe_id,cans:Number(x.cans),bakedAt:x.baked_at,note:x.note??''})));setGuestContacts(Object.fromEntries((contacts.data??[]).map(c=>[c.order_id,c as GuestContact])));setOrders(loadedOrders);setRecipes(loadedRecipes);setStock(loadedStock);setShoppingItems(loadedShopping);setHydrated(true)
+      setBakingAllocations((allocations.data??[]).map(x=>({orderId:x.order_id,recipeId:x.recipe_id,cans:Number(x.cans)})));setBakingEvents((baking.data??[]).map(x=>({id:x.id,recipeId:x.recipe_id,cans:Number(x.cans),bakedAt:x.baked_at,note:x.note??''})));setGuestContacts(Object.fromEntries((contacts.data??[]).map(c=>[c.order_id,c as GuestContact])));setOrders(loadedOrders);setRecipes(loadedRecipes);setStock(loadedStock);setShoppingItems(loadedShopping);setHydrated(true)
     }).catch(e=>{if(live)setCloudError(String(e))})
     return ()=>{live=false}
   },[client,user?.id,isAdmin])
@@ -123,8 +126,12 @@ function BiscuitFlowPage() {
     if(!changed.length)return
     const rows=changed.map(x=>({owner_id:user.id,id:x.id,customer:x.customer,items:x.items,qty:x.qty,date:x.date,status:x.status,method:x.method,shortage:x.shortage??false,order_items:x.orderItems??[]}))
     client.from('biscuit_orders').upsert(rows,{onConflict:'owner_id,id'}).then(({error})=>{
-      if(error)setCloudError('Order save failed: '+error.message)
-      else changed.forEach(x=>previous.current.orders.set(x.id,JSON.stringify(x)))
+      if(error){setCloudError('Order save failed: '+error.message);return}
+      changed.forEach(x=>previous.current.orders.set(x.id,JSON.stringify(x)))
+      client.from('biscuit_baking_allocations').select('order_id,recipe_id,cans').then(({data,error:allocationError})=>{
+        if(allocationError)setCloudError('Allocation refresh failed: '+allocationError.message)
+        else setBakingAllocations((data??[]).map(x=>({orderId:x.order_id,recipeId:x.recipe_id,cans:Number(x.cans)})))
+      })
     })
   },[orders,hydrated,client,user])
   useEffect(()=>{
@@ -186,7 +193,7 @@ function BiscuitFlowPage() {
       setBakingEvents((response.data??[]).map(x=>({id:x.id,recipeId:x.recipe_id,cans:Number(x.cans),bakedAt:x.baked_at,note:x.note??''})))
     }finally{setBakeSaving(false)}
   }
-  const bakedTotals=useMemo(()=>Object.fromEntries(recipes.map(r=>[r.id,bakingEvents.filter(e=>e.recipeId===r.id).reduce((a,e)=>a+e.cans,0)])),[recipes,bakingEvents])
+  const bakedTotals=useMemo(()=>Object.fromEntries(recipes.map(r=>[r.id,Math.max(0,bakingEvents.filter(e=>e.recipeId===r.id).reduce((a,e)=>a+e.cans,0)-bakingAllocations.filter(a=>a.recipeId===r.id).reduce((n,a)=>n+a.cans,0))])),[recipes,bakingEvents,bakingAllocations])
   const productionRemaining=useMemo(()=>planProduction(orders.map(o=>({id:o.id,status:o.status,items:o.orderItems??[]})),recipes).map(p=>({...p,baked:bakedTotals[p.recipe.id]??0,remaining:Math.max(0,Math.ceil(p.cans)-(bakedTotals[p.recipe.id]??0))})),[orders,recipes,bakedTotals])
   const requirements = useMemo(() => calculateRequirements(orders.map(o => ({ id: o.id, status: o.status, items: o.orderItems ?? [] })), recipes, stock), [orders, recipes, stock])
   const shortages = requirements.filter(r => r.shortage > 0)
@@ -347,11 +354,11 @@ function PlanningPage({orders,recipes,requirements,setActive,bakedTotals,bakingE
  const plans=planProduction(activeOrders.map(o=>({id:o.id,status:o.status,items:o.orderItems??[]})),recipes)
  const remaining=plans.map(p=>({...p,baked:bakedTotals[p.recipe.id]??0,remaining:Math.max(0,Math.ceil(p.cans)-(bakedTotals[p.recipe.id]??0))}))
  const short= requirements.filter(r=>r.shortage>0)
- return <><PageHeading eyebrow="Workspace / Production" title="Production planning" description={language==='zh'?'根据未完成订单和每罐数量计算烘焙计划。':'Calculated from active orders, cans per recipe batch, and due dates.'} action={<button onClick={()=>setActive('Customer Orders')} className="rounded-lg bg-[#8e5e42] px-4 py-2.5 text-sm font-semibold text-white">View orders</button>}/>
+ return <><PageHeading eyebrow="Workspace / Production" title="Production planning" description={language==='zh'?'记录烘焙数量，已完成订单自动扣除，新的订单增加需求。':'Baked cans become available stock; completed orders consume cans and new orders increase demand.'} action={<button onClick={()=>setActive('Customer Orders')} className="rounded-lg bg-[#8e5e42] px-4 py-2.5 text-sm font-semibold text-white">View orders</button>}/>
  {short.length>0&&<div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950"><AlertTriangle className="mr-2 inline size-4"/> {short.length} ingredient shortage(s) affect production. <button className="ml-2 underline" onClick={()=>setActive('Shopping List')}>Open shopping list</button></div>}
  <div className="mb-5 grid gap-3 sm:grid-cols-3">{[['Active orders',activeOrders.length],['Cans still needed',remaining.reduce((a,p)=>a+p.remaining,0)],['Total full batches',plans.reduce((a,p)=>a+p.batches,0)]].map(([name,value])=><div key={name} className="rounded-xl border bg-white p-4"><p className="text-xs text-[#998779]">{name}</p><p className="mt-1 text-2xl font-bold">{value}</p></div>)}</div>
  <div className="mb-5 rounded-2xl border bg-white p-5"><h2 className="font-serif text-lg font-bold">Record baked biscuits</h2><p className="mt-1 text-xs text-gray-500">Records are saved to Supabase. Baked cans are pooled by biscuit type and compared with active orders; recording does not mark an order Completed or deduct ingredient stock.</p><form onSubmit={submitBaking} className="mt-4 grid gap-3 sm:grid-cols-[1fr_120px]"><label className="text-sm">Biscuit type<select required value={selectedRecipe} onChange={e=>setSelectedRecipe(e.target.value)} className="mt-1 w-full rounded-lg border p-2"><option value="">Select biscuit</option>{recipes.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></label><label className="text-sm">Cans baked<input required type="number" min="1" max="10000" step="1" value={bakedCans} onChange={e=>setBakedCans(e.target.value)} className="mt-1 w-full rounded-lg border p-2" placeholder="e.g. 10"/></label><label className="text-sm sm:col-span-2">Note (optional)<input maxLength={250} value={bakingNote} onChange={e=>setBakingNote(e.target.value)} className="mt-1 w-full rounded-lg border p-2" placeholder="Morning baking batch"/></label><button type="submit" disabled={saving} className="rounded-lg bg-[#8e5e42] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{saving?'Saving...':'Record baked cans'}</button></form>{saveError&&<p role="alert" className="mt-2 text-sm text-red-700">{saveError}</p>}{saveSuccess&&<p role="status" className="mt-2 text-sm text-green-700">{saveSuccess}</p>}</div>
- <div className="rounded-2xl border bg-white p-5"><h2 className="font-serif text-lg font-bold">Production by biscuit type</h2><p className="mb-4 mt-1 text-xs text-[#96877b]">Batches are rounded up for planning; ingredient demand is calculated from exact pieces required, not full rounded batches.</p>{plans.length===0?<p className="py-6 text-sm text-gray-500">No active orders to produce.</p>:<div className="space-y-3">{remaining.map(p=><div key={p.recipe.id} className="rounded-xl border p-4"><p className="font-semibold">{p.recipe.name}</p><p className="mt-1 text-sm">Ordered: {p.cans} cans · Baked: {p.baked} cans · <b className={p.remaining>0?'text-amber-700':'text-green-700'}>Still needed: {p.remaining} cans</b></p><p className="text-xs text-gray-500">{p.pieces} pcs · {p.batches} full batch(es) estimated for demand</p><p className="mt-1 text-xs text-gray-500">{p.recipe.yieldPieces} pcs / {p.recipe.cansPerBatch??1} cans per full batch</p></div>)}</div>}</div>
+ <div className="rounded-2xl border bg-white p-5"><h2 className="font-serif text-lg font-bold">Production by biscuit type</h2><p className="mb-4 mt-1 text-xs text-[#96877b]">Batches are rounded up for planning; ingredient demand is calculated from exact pieces required, not full rounded batches.</p>{plans.length===0?<p className="py-6 text-sm text-gray-500">No active orders to produce.</p>:<div className="space-y-3">{remaining.map(p=><div key={p.recipe.id} className="rounded-xl border p-4"><p className="font-semibold">{p.recipe.name}</p><p className="mt-1 text-sm">Ordered: {p.cans} cans · Available baked: {p.baked} cans · <b className={p.remaining>0?'text-amber-700':'text-green-700'}>Still needed: {p.remaining} cans</b></p><p className="text-xs text-gray-500">{p.pieces} pcs · {p.batches} full batch(es) estimated for demand</p><p className="mt-1 text-xs text-gray-500">{p.recipe.yieldPieces} pcs / {p.recipe.cansPerBatch??1} cans per full batch</p></div>)}</div>}</div>
  <div className="mt-5 rounded-2xl border bg-white p-5"><h2 className="mb-4 font-serif text-lg font-bold">Recent baking records</h2>{bakingEvents.length===0?<p className="text-sm text-gray-500">No baking recorded yet.</p>:<div className="space-y-2">{bakingEvents.slice(0,10).map(e=><div key={e.id} className="flex justify-between gap-3 border-b py-2 text-sm"><span>{recipes.find(r=>r.id===e.recipeId)?.name??'Unknown biscuit'} · <b>{e.cans} cans</b>{e.note&&<span className="text-xs text-gray-500"> · {e.note}</span>}</span><span className="text-xs text-gray-500">{new Date(e.bakedAt).toLocaleString()}</span></div>)}</div>}</div>
  <div className="mt-5 rounded-2xl border bg-white p-5"><h2 className="mb-4 font-serif text-lg font-bold">Orders by delivery deadline</h2>{activeOrders.length===0?<p className="text-sm text-gray-500">No upcoming jobs.</p>:<div className="space-y-2">{activeOrders.map(o=><div key={o.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-3"><div><b className="text-sm">{o.customer}</b><p className="text-xs text-gray-500">{o.qty} · Due {o.date}</p></div><StatusPill status={o.status}/><button onClick={()=>setActive('Customer Orders')} className="rounded-lg border px-3 py-2 text-xs">Manage order</button></div>)}</div>}</div></>
 }
