@@ -49,17 +49,17 @@ export const sampleStock: StockItem[] = [
   { id: 'butter', name: 'Butter', quantity: 420, minimum: 500, unit: 'g' },
   { id: 'almond', name: 'Almond', quantity: 0, minimum: 300, unit: 'g' },
   { id: 'sugar', name: 'Sugar', quantity: 2400, minimum: 500, unit: 'g' },
-  { id: 'egg', name: 'Egg', quantity: 1500, minimum: 500, unit: 'g' },
+  { id: 'egg', name: 'Egg', quantity: 30, minimum: 10, unit: 'pcs' },
 ]
 export const sampleRecipes: Recipe[] = [
-  { id: 'peanut-recipe', name: 'Peanut Biscuit', yieldPieces: 100, ingredients: [{ ingredientId: 'peanut', quantity: 500, unit: 'g' }, { ingredientId: 'flour', quantity: 300, unit: 'g' }, { ingredientId: 'sugar', quantity: 150, unit: 'g' }, { ingredientId: 'butter', quantity: 200, unit: 'g' }, { ingredientId: 'egg', quantity: 100, unit: 'g' }] },
+  { id: 'peanut-recipe', name: 'Peanut Biscuit', yieldPieces: 100, ingredients: [{ ingredientId: 'peanut', quantity: 500, unit: 'g' }, { ingredientId: 'flour', quantity: 300, unit: 'g' }, { ingredientId: 'sugar', quantity: 150, unit: 'g' }, { ingredientId: 'butter', quantity: 200, unit: 'g' }, { ingredientId: 'egg', quantity: 2, unit: 'pcs' }] },
   { id: 'butter-recipe', name: 'Butter Cookies', yieldPieces: 80, ingredients: [{ ingredientId: 'butter', quantity: 240, unit: 'g' }, { ingredientId: 'flour', quantity: 400, unit: 'g' }, { ingredientId: 'sugar', quantity: 100, unit: 'g' }] },
   { id: 'almond-recipe', name: 'Almond Biscuit', yieldPieces: 60, ingredients: [{ ingredientId: 'almond', quantity: 300, unit: 'g' }, { ingredientId: 'flour', quantity: 250, unit: 'g' }] },
   { id: 'chocolate-recipe', name: 'Chocolate Chip', yieldPieces: 100, ingredients: [{ ingredientId: 'flour', quantity: 300, unit: 'g' }, { ingredientId: 'butter', quantity: 150, unit: 'g' }] },
 ]
 
 // Catalog quantities start at zero because actual stock has not been provided.
-// Eggs and other solid ingredients use g; liquids use ml. Pieces remain available for other count-based ingredients.
+// Eggs use pcs; liquids use ml; other solid ingredients generally use g.
 
 const ingredientChinese:Record<string,string> = {
  "Butter": "黄油",
@@ -103,7 +103,7 @@ export function bilingualIngredient(name:string):string {
 
 export const suggestedIngredients: StockItem[] = [
   ['Butter','g'],['Sugar','g'],['Cake Flour','g'],['Bread Flour','g'],
-  ['Macadamia','g'],['Dark Chocolate','g'],['Pineapple Paste','g'],['Eggs','g'],
+  ['Macadamia','g'],['Dark Chocolate','g'],['Pineapple Paste','g'],['Eggs','pcs'],
   ['Peanut','g'],['Peanut Oil','ml'],['Red Fermented Beancurd','g'],['Maltose','g'],
   ['Sesame Seed','g'],['Candied Wintermelon','g'],['Vegetable Oil','ml'],
   ['White Pepper Powder','g'],['Five Spice Powder','g'],['Brown Sugar','g'],
