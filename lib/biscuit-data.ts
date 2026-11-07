@@ -4,7 +4,7 @@ export type RecipeIngredient = { ingredientId: string; quantity: number; unit: U
 export type Recipe = { id: string; name: string; yieldPieces: number; cansPerBatch?: number; published?: boolean; pricePerCan?: number; ingredients: RecipeIngredient[] }
 export type OrderItem = { recipeId: string; pieces?: number; cans?: number }
 export type DemandOrder = { id: string; status: string; items: OrderItem[] }
-export type Requirement = { ingredient: StockItem; required: number; available: number; shortage: number; orderIds: string[] }
+export type Requirement = { ingredient: StockItem; required: number; available: number; shortage: number; orderIds: string[]; unitMismatch?: string }
 
 const factors: Record<Unit, number> = { g: 1, kg: 1000, ml: 1, L: 1000, pcs: 1 }
 function dimension(unit: Unit) { return unit === 'g' || unit === 'kg' ? 'mass' : unit === 'ml' || unit === 'L' ? 'volume' : 'count' }
@@ -14,6 +14,7 @@ export function convert(quantity: number, from: Unit, to: Unit): number {
 }
 export function calculateRequirements(orders: DemandOrder[], recipes: Recipe[], inventory: StockItem[], availableBaked:Record<string,number>={}): Requirement[] {
   const totals = new Map<string,{amount:number;orders:Set<string>}>()
+  const unitMismatches = new Map<string,string>()
   const outstanding = planProduction(orders,recipes)
   for(const plan of outstanding){
     const recipe=plan.recipe
@@ -23,6 +24,12 @@ export function calculateRequirements(orders: DemandOrder[], recipes: Recipe[], 
     for(const part of recipe.ingredients){
       const stock=inventory.find(i=>i.id===part.ingredientId)
       if(!stock)continue
+      // Old saved recipes may still use grams after an ingredient was changed to pcs.
+      // Never crash the entire dashboard or silently treat incompatible units as equal.
+      if(dimension(part.unit)!==dimension(stock.unit)){
+        unitMismatches.set(stock.id,`${recipe.name}: ${stock.name} is ${part.unit} in the recipe but ${stock.unit} in inventory`)
+        continue
+      }
       const amount=convert(part.quantity*batches,part.unit,stock.unit)
       const total=totals.get(stock.id)??{amount:0,orders:new Set<string>()}
       total.amount+=amount
@@ -33,7 +40,7 @@ export function calculateRequirements(orders: DemandOrder[], recipes: Recipe[], 
   return inventory.map(ingredient=>{
     const entry=totals.get(ingredient.id)
     const required=entry?.amount??0
-    return {ingredient,required,available:ingredient.quantity,shortage:Math.max(0,required-ingredient.quantity),orderIds:[...(entry?.orders??[])]}
+    return {ingredient,required,available:ingredient.quantity,shortage:Math.max(0,required-ingredient.quantity),orderIds:[...(entry?.orders??[])],unitMismatch:unitMismatches.get(ingredient.id)}
   })
 }
 export const sampleStock: StockItem[] = [
