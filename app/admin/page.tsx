@@ -310,7 +310,7 @@ function RecipesPage({ recipes, setRecipes, stock }: { recipes: Recipe[]; setRec
   }
   function save(e: React.FormEvent) {
     e.preventDefault()
-    if (!name.trim() || yieldPieces <= 0 || !Number.isInteger(yieldPieces) || !Number.isFinite(cansPerBatch) || cansPerBatch <= 0 || Math.round(cansPerBatch*100)!==cansPerBatch*100 || parts.length === 0 || parts.some(p => !p.ingredientId || p.quantity <= 0) || new Set(parts.map(p => p.ingredientId)).size !== parts.length) {
+    if (!name.trim() || yieldPieces <= 0 || !Number.isInteger(yieldPieces) || !Number.isFinite(cansPerBatch) || cansPerBatch <= 0 || Math.abs(Math.round(cansPerBatch*100)-cansPerBatch*100)>1e-8 || parts.length === 0 || parts.some(p => !p.ingredientId || p.quantity <= 0) || new Set(parts.map(p => p.ingredientId)).size !== parts.length) {
       alert('Enter a valid recipe: positive whole-number pieces, up to 2 decimal places for cans per batch, and unique ingredients with positive quantities.'); return
     }
     if(!Number.isFinite(pricePerCan)||pricePerCan<0||Math.round(pricePerCan*100)!==pricePerCan*100||(published&&pricePerCan<=0)){alert('Enter a valid price per can in RM (2 decimal places). Published biscuits must have a price greater than RM 0.');return}
