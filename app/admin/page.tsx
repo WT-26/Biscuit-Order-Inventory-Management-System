@@ -352,6 +352,8 @@ function RecipesPage({ recipes, setRecipes, stock }: { recipes: Recipe[]; setRec
     if (!name.trim() || yieldPieces <= 0 || !Number.isInteger(yieldPieces) || !Number.isFinite(cansPerBatch) || cansPerBatch <= 0 || Math.abs(Math.round(cansPerBatch*100)-cansPerBatch*100)>1e-8 || parts.length === 0 || parts.some(p => !p.ingredientId || p.quantity <= 0) || new Set(parts.map(p => p.ingredientId)).size !== parts.length) {
       alert('Enter a valid recipe: positive whole-number pieces, up to 2 decimal places for cans per batch, and unique ingredients with positive quantities.'); return
     }
+    const mismatchedIngredient=parts.find(p=>{const st=stock.find(i=>i.id===p.ingredientId);if(!st)return true;const group=(u:Unit)=>u==='g'||u==='kg'?'mass':u==='ml'||u==='L'?'volume':'count';return group(p.unit)!==group(st.unit)})
+    if(mismatchedIngredient){const st=stock.find(i=>i.id===mismatchedIngredient.ingredientId);alert(st?`Ingredient unit mismatch: ${st.name} is ${st.unit} in Inventory but ${mismatchedIngredient.unit} in this recipe. Update both the recipe unit and the quantity before saving.`:'A selected ingredient is missing from Inventory.');return}
     if(!Number.isFinite(pricePerCan)||pricePerCan<0||Math.round(pricePerCan*100)!==pricePerCan*100||(published&&pricePerCan<=0)){alert('Enter a valid price per can in RM (2 decimal places). Published biscuits must have a price greater than RM 0.');return}
     const record: Recipe = { id: editing?.id ?? crypto.randomUUID(), name: name.trim(), yieldPieces, cansPerBatch, published, pricePerCan, ingredients: parts }
     setRecipes(old => editing ? old.map(r => r.id === editing.id ? record : r) : [...old, record])
