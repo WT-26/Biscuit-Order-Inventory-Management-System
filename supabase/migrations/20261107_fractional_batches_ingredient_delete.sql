@@ -58,8 +58,8 @@ begin
  values(v_owner,p_recipe_id,p_cans,coalesce(p_note,'')) returning id into v_id;
  return v_id;
 end$$;
-revoke all on function public.record_baked_cans(text,integer,text) from public,anon;
-grant execute on function public.record_baked_cans(text,integer,text) to authenticated;
+revoke all on function public.record_baked_cans(text,numeric,text) from public,anon;
+grant execute on function public.record_baked_cans(text,numeric,text) to authenticated;
 
 
 -- The existing completion trigger must preserve fractional unallocated totals.
